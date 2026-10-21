@@ -2,12 +2,22 @@
 
 DeepSeek Harness（DSH）插件：把 TAPD 需求接进会话。
 
-两件事：
+三件事：
 
-1. **注册工具** —— 模型可以查询需求列表、读需求详情、改需求状态/处理人/优先级。
-2. **引用展开** —— 在输入框里写 `@tapd:story:<需求ID>`，发送时宿主自动把该需求正文注入上下文，模型不用再调一次工具。
+1. **左侧 TAPD 面板** —— 装完侧栏多一个入口，第一次进去填项目 ID 与访问令牌，之后直接搜需求、看详情、复制引用。
+2. **注册工具** —— 模型可以查询需求列表、读需求详情、改需求状态/处理人/优先级。
+3. **引用展开** —— 在输入框里写 `@tapd:story:<需求ID>`，发送时宿主自动把该需求正文注入上下文，模型不用再调一次工具。
 
-> 当前版本 0.1.0：只含宿主半区（工具 + 引用注入），不含自定义界面。需求面板在 0.2 路线里。
+> 面板与工具共用同一份配置：面板保存的 `$DSH_HOME/tapd/config.json` 优先，其次是插件行 config，最后是环境变量。
+
+> 当前版本 0.2.0：宿主半区（工具 + 引用注入 + `/tapd` 本地接口）和浏览器半区（左侧 TAPD 面板）都在。
+
+## 装完是什么体验
+
+1. 侧栏多一个 **TAPD** 入口；
+2. 第一次点进去停在配置页，填项目 ID + 个人访问令牌 → 保存（可先点「测试连接」）；
+3. 配好就直接进需求列表：搜索、点开看详情、一键复制 `@tapd:story:<id>` 引用；
+4. 把引用粘进输入框发出去，宿主会把需求正文注入上下文。
 
 ## 安装
 
@@ -23,7 +33,7 @@ npm install && npm run build
 
 1. 侧栏 → **插件** → **添加插件**；
 2. 输入框里填本地绝对路径（如 `/Users/fen/PROJECT/tapd-in-dsh`）或 Git 地址（`https://github.com/fenlgy/tapd-in-dsh`）；
-3. 装完在「已安装插件」里启用，配置在插件详情页改。
+3. 装完在「已安装插件」里启用，回到侧栏就能看到 **TAPD** 入口。
 
 ### 方式二：命令行
 
@@ -57,7 +67,9 @@ dsh --profile desktop --dump-config | grep -A3 tapd
 
 ## 配置
 
-最少填两项：鉴权 + 项目 ID。
+最省事：在左侧 **TAPD 面板 → 设置** 里填，保存后立即生效，写进 `$DSH_HOME/tapd/config.json`（权限 600）。
+
+要写进 profile 也可以，面板里的值仍然优先：
 
 ```yaml
 # ~/.dsh/profiles/desktop/cordis.patch.yml
@@ -73,6 +85,8 @@ dsh --profile desktop --dump-config | grep -A3 tapd
 export TAPD_API_TOKEN=...
 export TAPD_WORKSPACE_ID=10104801
 ```
+
+优先级：**面板保存的 config.json → 插件行 config → 环境变量**。
 
 ### 两种鉴权方式，二选一
 
@@ -97,6 +111,10 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 | `maxBodyChars` | `8000` | 单条需求描述注入上限 |
 
 ## 用法
+
+### 面板
+
+侧栏 **TAPD** → 搜标题、点开看详情 → 「复制引用」把 `@tapd:story:<id>` 拿进剪贴板，粘进输入框即用。
 
 ### 引用需求
 
@@ -131,11 +149,12 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 - **已核实（读类型定义确认）**：`defineTool` 的 `DefineToolOptions`、`ctx.tools.register`、`agent/pre-step` 的 waterfall 形态与 `PreStepDecision = { kind: 'enter'; messages }`、`createUserMessage({ content, source })`、`MessageSource.plugin` 带 `form`/`summary`。
 - **已核实（TAPD 开放平台文档）**：`GET/POST https://api.tapd.cn/stories`、`limit` 上限 200、`id` + `workspace_id` 为更新必填、返回 `{ status: 1, data, info }`、Basic Auth 用 `应用ID:应用秘钥`。
 - **未验证**：在真实 DSH 例程里跑通全链路。类型是按 `@deepseek-ai/dsh-tools@0.0.1-rc.1` / `dsh-llm@0.0.1-rc.1` / `dsh-agent@0.1.0-rc.6` 核的，而 `@deepseek-ai/dsh` 本身已经到 `0.2.1-rc.2`，装到你本地后如果签名有变，`npm run typecheck` 会直接报出来。
-- **未实现**：评论、缺陷（bug）、迭代接口；自定义面板。
+- **已核实（读 DSH 内置包确认）**：客户端半区的模块约定 `window.__ModuleLoader__.load({ id, factory })`、`ctx.slots.register` 的 `main` / `sidebar.panellist` 两个插槽及其 `key` 对应关系、`ctx.locale.register(ns, { zh, en })` + `ctx.locale.bind(ns)`、宿主侧 `ctx.webServer.register({ kind: 'prefix', path, handler })`。浏览器半区与 `client.js` 的注册契约有冒烟测试（`npm test`）。
+- **未实现**：评论、缺陷（bug）、迭代接口；从面板把引用直接塞进输入框（需要 `inputActions.setDraft`，目前是复制到剪贴板）。
 
 ## 路线
 
-- **0.2 需求面板**：注册到 `conversation.view`（`{ kind: 'list', scope: 'session' }`，owner 为 `ConvViewOwnerProps`）做一个需求列表 tab，点行调用 `inputActions.setDraft(draft + ' @tapd:story:... ')` 把引用塞进输入框。`conversation.input.left`（owner 为 `InputZone`，带 `session` / `input` 快照）可以放一个「插入需求引用」按钮。这两处签名已核实，缺的是客户端半区取数据的传输层，需要先确认宿主怎么暴露自定义 HTTP 路由。
+- 面板里直接「插入到对话」：`conversation.input.left`（owner 为 `InputZone`）放按钮，调 `inputActions.setDraft(draft + ' @tapd:story:... ')`。
 - 补充评论 / bug / 迭代接口。
 
 ## 开发
@@ -144,7 +163,10 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 npm install           # 仓库带了 .npmrc，走 legacy-peer-deps
 npm run typecheck     # 只检查类型
 npm run build         # 产出 lib/
+npm test              # 宿主路由 + 客户端注册契约的冒烟测试
 ```
+
+> `client.js` 是手写的浏览器半区，不走构建：DSH 的客户端加载器按 `window.__ModuleLoader__.load({ id, factory })` 取模块，`factory` 返回 `{ inject, apply }`，`require` 只解析宿主已提供的裸模块（`react`）。改完刷新页面即可，不用重新 build。
 
 > DSH 的 rc 包 peer 依赖图还没收敛，不加 `legacy-peer-deps` 会 ERESOLVE 报错，所以仓库里放了 `.npmrc`。这个文件不进 npm 包（`files` 白名单）。
 

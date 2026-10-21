@@ -1,9 +1,12 @@
 /**
  * tapd-in-dsh —— DeepSeek Harness 插件宿主半区。
  *
- * 两件事：
+ * 三件事：
  * 1. 注册 tapd_* 工具，让模型能查询 / 更新 TAPD 需求；
- * 2. 监听 agent/pre-step，把会话里的 `@tapd:story:<id>` 引用展开成需求正文。
+ * 2. 监听 agent/pre-step，把会话里的 `@tapd:story:<id>` 引用展开成需求正文；
+ * 3. 在宿主 web server 上挂 `/tapd` 路由，给左侧「TAPD」面板提供配置读写与需求列表。
+ *
+ * 配置优先级见 store.ts：面板保存的 `$DSH_HOME/tapd/config.json` > 插件行 config > 环境变量。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -11,12 +14,15 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import Schema from '@deepseek-ai/schemastery'
 import { collectReferences, formatReference, renderReferenceFailure, renderStoryContext } from './reference.js'
-import { TapdClient, TapdError } from './tapd.js'
-import type { TapdStory } from './tapd.js'
+import { TapdError } from './tapd.js'
+import type { TapdClient, TapdStory } from './tapd.js'
+import { createClient, registerRoutes } from './routes.js'
+import { publicConfig } from './store.js'
+import type { StoredConfig } from './store.js'
 
 export const name = 'tapd-in-dsh'
 
-/** 只依赖工具注册表；事件监听走 cordis 核心，无需额外服务。 */
+/** 只依赖工具注册表；事件监听走 cordis 核心，web server 用可选注入。 */
 export const inject = ['tools']
 
 export interface Config {
@@ -60,22 +66,43 @@ const jsonOutput = {
 }
 
 export function apply(ctx: Context, config: Config): void {
-  const client = new TapdClient({
-    auth: {
-      user: config.apiUser ?? process.env['TAPD_API_USER'],
-      password: config.apiPassword ?? process.env['TAPD_API_PASSWORD'],
-      token: config.apiToken ?? process.env['TAPD_API_TOKEN'],
-    },
-    defaultWorkspaceId: config.workspaceId ?? process.env['TAPD_WORKSPACE_ID'],
-    baseUrl: config.baseUrl,
-    timeoutMs: config.timeoutMs,
-  })
+  const rowConfig: StoredConfig = {
+    ...(config.apiUser ? { apiUser: config.apiUser } : {}),
+    ...(config.apiPassword ? { apiPassword: config.apiPassword } : {}),
+    ...(config.apiToken ? { apiToken: config.apiToken } : {}),
+    ...(config.workspaceId ? { workspaceId: config.workspaceId } : {}),
+    ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+  }
 
-  registerTools(ctx, client, config)
-  if (config.injectReference) registerReferenceInjection(ctx, client, config)
+  /** 每次调用现取有效配置，所以在面板里保存后立刻生效，不用重启。 */
+  const getClient = () => createClient(rowConfig, config.timeoutMs)
+
+  registerTools(ctx, getClient, config)
+  if (config.injectReference) registerReferenceInjection(ctx, getClient, config)
+  registerPanelRoutes(ctx, rowConfig)
 }
 
-function registerTools(ctx: Context, client: TapdClient, config: Config): void {
+/**
+ * 把面板用的 `/tapd` 路由挂到宿主 web server 上。
+ *
+ * 用可选注入：没有 webServer 的部署（例如纯 headless）里插件照样提供工具与引用注入，
+ * 只是左侧面板取不到数据。
+ */
+function registerPanelRoutes(ctx: Context, rowConfig: StoredConfig): void {
+  const injector = (ctx as unknown as { inject: (deps: string[], run: (sub: Context) => void) => void }).inject
+  if (typeof injector !== 'function') return
+  injector.call(ctx, ['webServer'], (webCtx: Context) => {
+    const server = (webCtx as unknown as { webServer?: Parameters<typeof registerRoutes>[0] }).webServer
+    if (!server) return
+    webCtx.effect(() => registerRoutes(server, rowConfig), 'tapd-in-dsh: /tapd 路由')
+    const view = publicConfig(rowConfig)
+    webCtx.logger?.info?.(
+      `[tapd-in-dsh] 面板路由就绪 /tapd；workspace=${view.workspaceId || '(unset)'} 鉴权=${view.configured ? 'ok' : 'missing'}（来源 ${view.source}）`,
+    )
+  })
+}
+
+function registerTools(ctx: Context, getClient: () => TapdClient, config: Config): void {
   ctx.tools.register(
     defineTool({
       name: 'tapd_list_stories',
@@ -92,7 +119,7 @@ function registerTools(ctx: Context, client: TapdClient, config: Config): void {
       },
       output: jsonOutput,
       async execute(args, exec) {
-        const stories = await client.listStories(
+        const stories = await getClient().listStories(
           {
             ...(args.workspace_id ? { workspaceId: args.workspace_id } : {}),
             ...(args.name ? { name: args.name } : {}),
@@ -122,7 +149,7 @@ function registerTools(ctx: Context, client: TapdClient, config: Config): void {
       },
       output: jsonOutput,
       async execute(args, exec) {
-        const story = await client.getStory(args.id, {
+        const story = await getClient().getStory(args.id, {
           ...(args.workspace_id ? { workspaceId: args.workspace_id } : {}),
           signal: exec.signal,
         })
@@ -146,7 +173,7 @@ function registerTools(ctx: Context, client: TapdClient, config: Config): void {
       },
       output: jsonOutput,
       async execute(args, exec) {
-        const story = await client.updateStory(
+        const story = await getClient().updateStory(
           {
             id: args.id,
             ...(args.workspace_id ? { workspaceId: args.workspace_id } : {}),
@@ -169,7 +196,7 @@ function registerTools(ctx: Context, client: TapdClient, config: Config): void {
  * 引用展开：在 agent/pre-step 这个 waterfall 上，把带 @tapd 引用的那一步
  * 追加一条 plugin 来源的上下文消息。来源标记为 plugin，所以不会被自己再扫到。
  */
-function registerReferenceInjection(ctx: Context, client: TapdClient, config: Config): void {
+function registerReferenceInjection(ctx: Context, getClient: () => TapdClient, config: Config): void {
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next()
     if (decision.kind !== 'enter') return decision
@@ -187,7 +214,7 @@ function registerReferenceInjection(ctx: Context, client: TapdClient, config: Co
     for (const reference of references) {
       if (payload.signal.aborted) return decision
       try {
-        const story = await client.getStory(reference.storyId, {
+        const story = await getClient().getStory(reference.storyId, {
           ...(reference.workspaceId ? { workspaceId: reference.workspaceId } : {}),
           signal: payload.signal,
         })
