@@ -13,7 +13,7 @@ DeepSeek Harness（DSH）插件：把 TAPD 需求接进会话。
 
 ```bash
 # 从 GitHub 装（推荐，方便分发）
-dsh plugin --profile web add github:<你的账号>/dsh-tapd
+dsh plugin --profile web add github:fenlgy/tapd-in-dsh
 
 # 从 npm 装（发布之后）
 dsh plugin --profile web add dsh-tapd

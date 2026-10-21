@@ -52,5 +52,13 @@
     "tapd",
     "tencent"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fenlgy/tapd-in-dsh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fenlgy/tapd-in-dsh/issues"
+  },
+  "homepage": "https://github.com/fenlgy/tapd-in-dsh#readme"
 }
