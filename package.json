@@ -1,6 +1,6 @@
 {
   "name": "tapd-in-dsh",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "DeepSeek Harness 插件：接入 TAPD 需求，支持在会话中通过 @tapd:story:<id> 引用需求全文",
   "type": "module",
   "main": "lib/index.js",

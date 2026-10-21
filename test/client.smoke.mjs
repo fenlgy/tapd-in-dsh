@@ -97,15 +97,8 @@ const outer = pageComp({ t: (key) => dict[key] ?? key })
 assert.ok(outer && typeof outer === 'object', '页面组件没有返回可渲染元素')
 // 注册的组件是一层包了 t 的壳，真正渲染的是它里面的页面组件。
 const inner = typeof outer.type === 'function' ? outer.type(outer.props) : outer
-assert.ok(
-  JSON.stringify(inner).includes('TAPD'),
-  '页面里应该出现 TAPD 字样（来自 zh 词典的 panel）',
-)
-
-// 侧栏图标组件要能吃 { size } 并返回 svg 元素。
-const iconComp = registrations.find((item) => item.kind === 'slot' && item.decl.name === 'sidebar.panellist').component
-const iconTree = iconComp({ size: 18 })
-assert.equal(iconTree.type, 'svg', '侧栏图标应渲染 svg')
+// 未配置时的页面内容要在展开之后才看得到（文字是组件里现算的），
+// 具体断言放在 expand 定义之后。
 
 /**
  * 请求地址必须与页面同源（0.2.5 修的就是这里）。
@@ -154,8 +147,21 @@ const findButton = (node, label) => {
   return findButton(node.children, label)
 }
 
+// 侧栏图标组件要能吃 { size } 并最终渲染出 svg 元素。
+const iconComp = registrations.find((item) => item.kind === 'slot' && item.decl.name === 'sidebar.panellist').component
+const iconTree = expand(iconComp({ size: 18 }))
+assert.equal(iconTree.type, 'svg', '侧栏图标应渲染 svg')
+assert.equal(iconTree.props.width, 18, '侧栏图标应吃 size')
+
+// 未配置时页面应直接停在配置表单：标题、字段说明都得是词典里的中文。
+const tree = expand(inner)
+const flat = JSON.stringify(tree)
+assert.ok(flat.includes('连接设置'), '未配置时应显示配置页标题')
+assert.ok(flat.includes('项目 ID'), '配置页应有「项目 ID」字段')
+assert.ok(flat.includes('个人访问令牌'), '配置页应有令牌字段')
+
 // 未配置时页面渲染的就是配置表单，点「保存」应该发一笔同源 PUT。
-const saveButton = findButton(expand(inner), '保存')
+const saveButton = findButton(tree, '保存')
 assert.ok(saveButton && typeof saveButton.props.onClick === 'function', '配置卡片里应有「保存」按钮')
 await saveButton.props.onClick()
 assert.ok(calls.length > 0, '点保存没有发出任何请求')
