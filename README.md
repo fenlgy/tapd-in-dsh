@@ -11,24 +11,48 @@ DeepSeek Harness（DSH）插件：把 TAPD 需求接进会话。
 
 ## 安装
 
-```bash
-# 从 GitHub 装（推荐，方便分发）
-dsh plugin --profile web add github:fenlgy/tapd-in-dsh
+插件装进 **profile**：桌面端是 `desktop`，`dsh web` 启动的浏览器端是 `web`。
 
-# 从 npm 装（发布之后）
-dsh plugin --profile web add tapd-in-dsh
+仓库里只有源码，`lib/`（构建产物）不入库，所以**从本地目录装之前先构建一次**：
+
+```bash
+npm install && npm run build
 ```
 
-装完重启：
+### 方式一：桌面端图形界面（推荐）
+
+1. 侧栏 → **插件** → **添加插件**；
+2. 输入框里填本地绝对路径（如 `/Users/fen/PROJECT/tapd-in-dsh`）或 Git 地址（`https://github.com/fenlgy/tapd-in-dsh`）；
+3. 装完在「已安装插件」里启用，配置在插件详情页改。
+
+### 方式二：命令行
+
+桌面端自带的 `dsh` 命令默认不在 PATH 里，先建一次软链：
 
 ```bash
-dsh --profile web
+sudo ln -sf "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" /usr/local/bin/dsh
 ```
 
-确认插件已进入配置树：
+```bash
+# 本地目录安装（改完代码重新 build 即生效）
+dsh plugin --profile desktop add link:/Users/fen/PROJECT/tapd-in-dsh
+
+# 从 GitHub 安装（git 依赖靠 prepare 脚本现场构建）
+dsh plugin --profile desktop add github:fenlgy/tapd-in-dsh
+
+# 从 npm 安装（发布之后）
+dsh plugin --profile desktop add tapd-in-dsh
+```
+
+两个坑：
+
+- `--profile desktop` 要求**先完全退出桌面端**（它独占这个 profile 的包管理）；`--profile web` 不受影响。
+- 从 Git 装时 pnpm 会拦住依赖的构建脚本（`prepare`），按它打印的提示把包名加进 `~/.dsh/profiles/desktop/pnpm-workspace.yaml` 的 `allowBuilds`，再跑一遍。
+
+确认装上了：
 
 ```bash
-dsh --profile web --dump-config | grep -A2 tapd
+dsh --profile desktop --dump-config | grep -A3 tapd
 ```
 
 ## 配置
@@ -36,7 +60,7 @@ dsh --profile web --dump-config | grep -A2 tapd
 最少填两项：鉴权 + 项目 ID。
 
 ```yaml
-# ~/.dsh/profiles/web/cordis.patch.yml
+# ~/.dsh/profiles/desktop/cordis.patch.yml
 - id: tapd
   config:
     apiToken: '你的 TAPD 个人访问令牌'
