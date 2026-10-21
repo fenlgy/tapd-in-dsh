@@ -13,7 +13,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { TapdClient, TapdError } from './tapd.js'
 import type { TapdStory } from './tapd.js'
 import { publicConfig, writeStore, resolveConfig } from './store.js'
-import type { StoredConfig } from './store.js'
+import type { ResolvedConfig, StoredConfig } from './store.js'
 import { formatReference } from './reference.js'
 
 /** 挂在宿主上的路由前缀。 */
@@ -56,7 +56,11 @@ export function registerRoutes(webServer: WebServerLike, rowConfig: StoredConfig
           return sendJson(res, 405, { error: '不支持的请求方法' })
         }
 
-        if (sub === TEST_PATH && req.method === 'POST') return await runTest(res, rowConfig)
+        // 面板可能在「还没保存」时就点测试连接，所以这里允许带一份临时补丁：
+        // 补丁只用于本次探活，不落盘。不带 body 时等价于测试已保存的配置。
+        if (sub === TEST_PATH && req.method === 'POST') {
+          return await runTest(res, rowConfig, asPatch(await readBodyQuietly(req)))
+        }
 
         if (sub === STORIES_PATH && req.method === 'GET') return await runStories(res, url, rowConfig)
 
@@ -86,26 +90,40 @@ export function createClient(rowConfig: StoredConfig = {}, timeoutMs?: number): 
   })
 }
 
-/** 真打一次 TAPD（limit=1），把凭据 / 项目 ID 的问题当场暴露给面板。 */
-async function runTest(res: ServerResponse, rowConfig: StoredConfig): Promise<void> {
-  const client = createClient(rowConfig)
-  const view = publicConfig(rowConfig)
-  if (!view.configured) {
+/**
+ * 真打一次 TAPD（limit=1），把凭据 / 项目 ID 的问题当场暴露给面板。
+ * @param rowConfig 插件行上的 config
+ * @param override 面板上尚未保存的值，只在本次探活里覆盖生效配置
+ */
+async function runTest(res: ServerResponse, rowConfig: StoredConfig, override: StoredConfig = {}): Promise<void> {
+  const { resolved } = resolveConfig(rowConfig)
+  const merged = applyOverride(resolved, override)
+  const configured = Boolean(merged.apiToken || (merged.apiUser && merged.apiPassword))
+  if (!configured) {
     sendJson(res, 200, {
       ok: false,
       error: '还没填鉴权：TAPD 免费版填「个人访问令牌」即可（个人设置 → 个人访问令牌）；付费版也可用开放应用 ID + 秘钥',
     })
     return
   }
-  if (!view.workspaceId) {
+  if (!merged.workspaceId) {
     sendJson(res, 200, { ok: false, error: '还没填项目 ID' })
     return
   }
+  const client = new TapdClient({
+    auth: {
+      ...(merged.apiUser ? { user: merged.apiUser } : {}),
+      ...(merged.apiPassword ? { password: merged.apiPassword } : {}),
+      ...(merged.apiToken ? { token: merged.apiToken } : {}),
+    },
+    defaultWorkspaceId: merged.workspaceId,
+    baseUrl: merged.baseUrl,
+  })
   try {
     const stories = await client.listStories({ limit: 1 })
     sendJson(res, 200, {
       ok: true,
-      workspaceId: view.workspaceId,
+      workspaceId: merged.workspaceId,
       count: stories.length,
       ...(stories[0]?.name ? { sample: stories[0].name } : {}),
     })
@@ -172,6 +190,25 @@ function asPatch(body: unknown): StoredConfig {
     if (typeof value === 'string') patch[key] = value
   }
   return patch
+}
+
+/** 用面板上尚未保存的值覆盖生效配置；空字符串表示「不修改」。 */
+function applyOverride(resolved: ResolvedConfig, patch: StoredConfig): ResolvedConfig {
+  const merged: ResolvedConfig = { ...resolved }
+  for (const key of ['apiUser', 'apiPassword', 'apiToken', 'workspaceId', 'baseUrl'] as const) {
+    const value = typeof patch[key] === 'string' ? (patch[key] as string).trim() : ''
+    if (value) merged[key] = value
+  }
+  return merged
+}
+
+/** 读请求体；空体或坏 JSON 都当作「没有补丁」，不让探活被 body 拖垮。 */
+async function readBodyQuietly(req: IncomingMessage): Promise<unknown> {
+  try {
+    return await readJson(req)
+  } catch {
+    return {}
+  }
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {

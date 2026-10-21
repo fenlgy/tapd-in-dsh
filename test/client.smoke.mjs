@@ -107,4 +107,62 @@ const iconComp = registrations.find((item) => item.kind === 'slot' && item.decl.
 const iconTree = iconComp({ size: 18 })
 assert.equal(iconTree.type, 'svg', '侧栏图标应渲染 svg')
 
+/**
+ * 请求地址必须与页面同源（0.2.5 修的就是这里）。
+ * 桌面端页面在 dsh-app://app，跨源直打 http://127.0.0.1:<端口> 会被浏览器拦掉。
+ */
+const calls = []
+globalThis.document = { baseURI: 'dsh-app://app/index.html' }
+globalThis.location = { href: 'dsh-app://app/index.html' }
+globalThis.__DSH_TRANSPORT__ = { streamBaseUrl: 'http://127.0.0.1:3080', ownsHost: true }
+globalThis.fetch = async (url, init) => {
+  calls.push({ url: String(url), method: (init && init.method) || 'GET' })
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: () => 'application/json' },
+    text: async () => JSON.stringify({ config: { configured: true }, stories: [] }),
+  }
+}
+
+/** 把函数组件就地展开成原生元素树（垫片下没有调和器）。 */
+const expand = (node) => {
+  if (Array.isArray(node)) return node.map(expand)
+  if (!node || typeof node !== 'object') return node
+  if (typeof node.type === 'function') {
+    const props = { ...node.props }
+    if (node.children && node.children.length > 0) {
+      props.children = node.children.length === 1 ? node.children[0] : node.children
+    }
+    const out = node.type(props)
+    return out && typeof out === 'object' ? expand(out) : out
+  }
+  return { ...node, children: (node.children || []).map(expand) }
+}
+
+/** 按显示文字找原生按钮。 */
+const findButton = (node, label) => {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findButton(child, label)
+      if (found) return found
+    }
+    return null
+  }
+  if (!node || typeof node !== 'object') return null
+  if (node.type === 'button' && node.children && node.children[0] === label) return node
+  return findButton(node.children, label)
+}
+
+// 未配置时页面渲染的就是配置表单，点「保存」应该发一笔同源 PUT。
+const saveButton = findButton(expand(inner), '保存')
+assert.ok(saveButton && typeof saveButton.props.onClick === 'function', '配置卡片里应有「保存」按钮')
+await saveButton.props.onClick()
+assert.ok(calls.length > 0, '点保存没有发出任何请求')
+for (const call of calls) {
+  assert.ok(call.url.startsWith('dsh-app://app/tapd/'), `请求必须与页面同源，实际是 ${call.url}`)
+}
+assert.equal(calls[0].method, 'PUT', '保存应使用 PUT')
+assert.notEqual(calls[0].url, 'http://127.0.0.1:3080/tapd/__config', '不允许直连宿主监听地址')
+
 console.log('客户端半区冒烟测试：全部通过')

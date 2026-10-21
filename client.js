@@ -38,22 +38,59 @@ window.__ModuleLoader__.load({
     //#region transport
 
     /**
-     * 宿主前缀的绝对地址。和 DSH 自己的客户端代码取法一致：
-     * 优先用注入的 transport，其次 document.baseURI。
+     * 面板请求的前缀地址，必须与页面**同源**。
+     *
+     * 桌面端的页面跑在 `dsh-app://app`，由主进程把这个源上的请求带上宿主 cookie
+     * 转发给真正的 host；Web 端的页面本身就在宿主源上。因此这里优先用页面自己的
+     * origin，而不是 `transport.streamBaseUrl`（形如 http://127.0.0.1:端口）：
+     * 那是宿主监听地址，直接打过去属于跨源请求，宿主侧既没有 CORS 头也没有会话
+     * cookie，浏览器会整个拦掉，面板上表现为「保存不了 / 测试连接没反应」。
      * @returns 去掉尾斜杠的前缀地址
      */
     function routeBase() {
       const transport = globalThis.__DSH_TRANSPORT__;
-      const anchor =
-        (transport && typeof transport.streamBaseUrl === 'string' && transport.streamBaseUrl) ||
-        (typeof document !== 'undefined' && document.baseURI) ||
-        (typeof location !== 'undefined' && location.href) ||
-        'http://127.0.0.1/';
-      try {
-        return new URL(ROUTE_PATH, anchor).href.replace(/\/$/, '');
-      } catch {
-        return ROUTE_PATH;
+      const streamBase =
+        transport && typeof transport.streamBaseUrl === 'string' ? transport.streamBaseUrl : '';
+      const anchors = [];
+      if (typeof document !== 'undefined' && document.baseURI) anchors.push(document.baseURI);
+      if (typeof location !== 'undefined' && location.href) anchors.push(location.href);
+      if (streamBase) anchors.push(streamBase);
+      for (const anchor of anchors) {
+        try {
+          const url = new URL(ROUTE_PATH, anchor);
+          // file:// 页面 fetch 不出去，换下一个候选
+          if (url.protocol === 'file:') continue;
+          return url.href.replace(/\/$/, '');
+        } catch {
+          /* 换下一个候选 */
+        }
       }
+      return ROUTE_PATH;
+    }
+
+    /**
+     * 发一次请求并读出 JSON。
+     *
+     * 把「请求根本没发到宿主」和「宿主回了错误」分开报，否则面板只会显示
+     * 一句 Failed to fetch，看不出是配置问题还是链路问题。
+     * @param path 相对前缀的路径（含查询串）
+     * @param init fetch 的初始化参数
+     * @param context 用于拼错误信息的方法与路径
+     * @returns 解析后的载荷
+     */
+    async function send(path, init, context) {
+      const url = `${routeBase()}${path}`;
+      let response;
+      try {
+        response = await fetch(url, init);
+      } catch (error) {
+        const detail = String((error && error.message) || error);
+        throw new Error(
+          `请求没发到宿主（${context.method} ${context.path}）：${detail}。`
+            + `面板走的是同源地址 ${url}，如果这里不是 DSH 的界面请重开面板。`,
+        );
+      }
+      return readReply(response, context);
     }
 
     /**
@@ -101,8 +138,10 @@ window.__ModuleLoader__.load({
 
     /** 读有效配置（密钥只有存在性标记）。 */
     async function loadConfig() {
-      const response = await fetch(`${routeBase()}${CONFIG_PATH}`, { headers: { accept: 'application/json' } });
-      const payload = await readReply(response, { method: 'GET', path: CONFIG_PATH });
+      const payload = await send(CONFIG_PATH, { headers: { accept: 'application/json' } }, {
+        method: 'GET',
+        path: CONFIG_PATH,
+      });
       return (payload && payload.config) || {};
     }
 
@@ -111,22 +150,32 @@ window.__ModuleLoader__.load({
      * @param patch 要写入的字段
      */
     async function saveConfig(patch) {
-      const response = await fetch(`${routeBase()}${CONFIG_PATH}`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      const payload = await readReply(response, { method: 'PUT', path: CONFIG_PATH });
+      const payload = await send(
+        CONFIG_PATH,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify(patch),
+        },
+        { method: 'PUT', path: CONFIG_PATH },
+      );
       return (payload && payload.config) || {};
     }
 
-    /** 用当前配置真打一次 TAPD。 */
-    async function testConnection() {
-      const response = await fetch(`${routeBase()}${TEST_PATH}`, {
-        method: 'POST',
-        headers: { accept: 'application/json' },
-      });
-      const payload = await readReply(response, { method: 'POST', path: TEST_PATH });
+    /**
+     * 用当前配置真打一次 TAPD。
+     * @param patch 面板上尚未保存的值；带上就按屏幕上的值探活，不用先保存
+     */
+    async function testConnection(patch) {
+      const payload = await send(
+        TEST_PATH,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify(patch || {}),
+        },
+        { method: 'POST', path: TEST_PATH },
+      );
       return payload || { ok: false, error: '没有响应内容' };
     }
 
@@ -140,8 +189,10 @@ window.__ModuleLoader__.load({
       if (params && params.status) query.set('status', params.status);
       query.set('limit', String((params && params.limit) || PAGE_LIMIT));
       const path = `${STORIES_PATH}?${query.toString()}`;
-      const response = await fetch(`${routeBase()}${path}`, { headers: { accept: 'application/json' } });
-      const payload = await readReply(response, { method: 'GET', path: STORIES_PATH });
+      const payload = await send(path, { headers: { accept: 'application/json' } }, {
+        method: 'GET',
+        path: STORIES_PATH,
+      });
       return payload || { configured: false, stories: [] };
     }
 
@@ -151,8 +202,10 @@ window.__ModuleLoader__.load({
      */
     async function loadStory(id) {
       const path = `${STORY_PATH}?id=${encodeURIComponent(id)}`;
-      const response = await fetch(`${routeBase()}${path}`, { headers: { accept: 'application/json' } });
-      const payload = await readReply(response, { method: 'GET', path: STORY_PATH });
+      const payload = await send(path, { headers: { accept: 'application/json' } }, {
+        method: 'GET',
+        path: STORY_PATH,
+      });
       if (payload && payload.error) throw new Error(String(payload.error));
       return (payload && payload.story) || null;
     }
@@ -303,26 +356,38 @@ window.__ModuleLoader__.load({
 
       const set = (key) => (event) => setForm((prev) => ({ ...prev, [key]: event.target.value }));
 
-      const submit = async () => {
-        setResult(null);
+      /**
+       * 表单当前值 → 配置补丁。密钥留空表示「不修改」，
+       * 清空要显式点对应动作才有意义。
+       * @returns 待提交的字段
+       */
+      const buildPatch = () => {
         const patch = {
           workspaceId: form.workspaceId.trim(),
           apiUser: form.apiUser.trim(),
           baseUrl: form.baseUrl.trim(),
         };
-        // 空着不提交：留空表示「不修改」，清空要显式点「清除令牌」之类的动作才有意义。
         if (form.apiToken.trim() !== '') patch.apiToken = form.apiToken.trim();
         if (form.apiPassword.trim() !== '') patch.apiPassword = form.apiPassword.trim();
-        await onSaved(patch);
-        setForm((prev) => ({ ...prev, apiToken: '', apiPassword: '' }));
+        return patch;
+      };
+
+      const submit = async () => {
+        setResult(null);
+        const ok = await onSaved(buildPatch());
+        // 只有真存下去了才清空密钥框，否则用户得重新粘一遍令牌
+        if (ok !== false) setForm((prev) => ({ ...prev, apiToken: '', apiPassword: '' }));
       };
 
       const probe = async () => {
         setTesting(true);
         setResult(null);
         try {
-          const payload = await onTest();
+          // 允许「先填、先测、再保存」：把屏幕上的值一起带去做探活
+          const payload = await onTest(buildPatch());
           setResult(payload);
+        } catch (error) {
+          setResult({ ok: false, error: String((error && error.message) || error) });
         } finally {
           setTesting(false);
         }
@@ -628,10 +693,13 @@ window.__ModuleLoader__.load({
             const view = await saveConfig(patch);
             setConfig(view);
             setShowSettings(false);
-            setNote({ kind: 'ok', text: t('saved') });
             await refresh('');
+            // refresh 失败时它自己会写错误提示，别用「已保存」把它盖掉
+            setNote((prev) => prev || { kind: 'ok', text: t('saved') });
+            return true;
           } catch (error) {
             fail(error);
+            return false;
           } finally {
             setBusy(false);
           }

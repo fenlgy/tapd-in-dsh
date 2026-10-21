@@ -97,6 +97,9 @@ console.log('配置端点')
 let reply = await call('GET', '/__config')
 check('未配置时 configured=false', reply.status === 200 && reply.json.config.configured === false, reply.json)
 
+reply = await call('POST', '/__test', { workspaceId: '10104801', apiToken: 'tok_123', baseUrl: fakeBase })
+check('未保存也能按屏幕上的值探活', reply.json.ok === true && reply.json.workspaceId === '10104801', reply.json)
+
 reply = await call('PUT', '/__config', { workspaceId: '10104801', apiToken: 'tok_123', baseUrl: fakeBase })
 check('保存后 configured=true', reply.json.config.configured === true, reply.json)
 check('令牌不外泄', JSON.stringify(reply.json).includes('tok_123') === false, reply.json)
