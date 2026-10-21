@@ -23,11 +23,9 @@ DeepSeek Harness（DSH）插件：把 TAPD 需求接进会话。
 
 插件装进 **profile**：桌面端是 `desktop`，`dsh web` 启动的浏览器端是 `web`。
 
-仓库里只有源码，`lib/`（构建产物）不入库，所以**从本地目录装之前先构建一次**：
+`lib/`（编译产物）随仓库一起提交，所以**从 Git 装不需要在本地跑构建**，也不会触发 pnpm 的 `allowBuilds` 拦截。
 
-```bash
-npm install && npm run build
-```
+> 只有改源码的开发场景才需要装依赖并重新构建：`npm install && npm run build`（记得把 `lib/` 一起提交）。
 
 ### 方式一：桌面端图形界面（推荐）
 
@@ -47,7 +45,7 @@ sudo ln -sf "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/b
 # 本地目录安装（改完代码重新 build 即生效）
 dsh plugin --profile desktop add link:/Users/fen/PROJECT/tapd-in-dsh
 
-# 从 GitHub 安装（git 依赖靠 prepare 脚本现场构建）
+# 从 GitHub 安装（lib/ 已预构建，无需任何脚本）
 dsh plugin --profile desktop add github:fenlgy/tapd-in-dsh
 
 # 从 npm 安装（发布之后）
@@ -57,7 +55,7 @@ dsh plugin --profile desktop add tapd-in-dsh
 两个坑：
 
 - `--profile desktop` 要求**先完全退出桌面端**（它独占这个 profile 的包管理）；`--profile web` 不受影响。
-- 从 Git 装时 pnpm 会拦住依赖的构建脚本（`prepare`），按它打印的提示把包名加进 `~/.dsh/profiles/desktop/pnpm-workspace.yaml` 的 `allowBuilds`，再跑一遍。
+- 0.2.0 及更早的版本在 `package.json` 里带 `prepare` 脚本，从 Git 装会被 pnpm 的供应链策略拦下（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）。0.2.1 起 `lib/` 预构建入库、脚本已移除，**不再需要配置 `allowBuilds`**。若你的 profile 里残留过该项，可以删掉。
 
 确认装上了：
 
