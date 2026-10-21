@@ -189,6 +189,90 @@ function registerTools(ctx: Context, getClient: () => TapdClient, config: Config
     }),
   )
 
+  ctx.tools.register(
+    defineTool({
+      name: 'tapd_create_story',
+      description:
+        '在 TAPD 新建一条需求。这是写操作：执行前必须先向用户复述标题、描述、处理人、优先级、所属迭代，并拿到明确确认。需要令牌具备 stories::add 权限。',
+      parameters: {
+        workspace_id: { type: 'string', description: 'TAPD 项目 ID，缺省用配置里的默认项目' },
+        name: { type: 'string', required: true, description: '需求标题' },
+        description: { type: 'string', description: '需求描述正文，支持纯文本或 HTML' },
+        owner: { type: 'string', description: '处理人 TAPD 用户名' },
+        priority_label: { type: 'string', description: '优先级，建议用中文标签，如「高」' },
+        iteration_id: { type: 'string', description: '所属迭代 ID' },
+        current_user: { type: 'string', description: '创建人（记录操作者）' },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const story = await getClient().createStory(
+          {
+            ...(args.workspace_id ? { workspaceId: args.workspace_id } : {}),
+            name: args.name,
+            ...(args.description ? { description: args.description } : {}),
+            ...(args.owner ? { owner: args.owner } : {}),
+            ...(args.priority_label ? { priority_label: args.priority_label } : {}),
+            ...(args.iteration_id ? { iteration_id: args.iteration_id } : {}),
+            ...(args.current_user ? { current_user: args.current_user } : {}),
+          },
+          exec.signal,
+        )
+        return { created: true, story: { ...story, reference: formatReference(story) } }
+      },
+    }),
+  )
+
+  ctx.tools.register(
+    defineTool({
+      name: 'tapd_add_comment',
+      description:
+        '给 TAPD 需求追加一条评论。这是写操作：执行前必须先把评论正文完整复述给用户并拿到明确确认。需要令牌具备 comments::add 权限。',
+      parameters: {
+        id: { type: 'string', required: true, description: '需求 ID' },
+        description: { type: 'string', required: true, description: '评论正文' },
+        workspace_id: { type: 'string', description: 'TAPD 项目 ID，缺省用配置里的默认项目' },
+        author: { type: 'string', description: '评论人 TAPD 用户名，缺省按凭据推断' },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const comment = await getClient().addComment(
+          {
+            storyId: args.id,
+            description: args.description,
+            ...(args.workspace_id ? { workspaceId: args.workspace_id } : {}),
+            ...(args.author ? { author: args.author } : {}),
+          },
+          exec.signal,
+        )
+        return { added: true, comment: { ...comment } }
+      },
+    }),
+  )
+
+  ctx.tools.register(
+    defineTool({
+      name: 'tapd_list_comments',
+      description: '读取某条 TAPD 需求的评论，按时间正序。需要先知道需求 ID。',
+      parameters: {
+        id: { type: 'string', required: true, description: '需求 ID' },
+        workspace_id: { type: 'string', description: 'TAPD 项目 ID，缺省用配置里的默认项目' },
+        limit: { type: 'number', description: '返回条数，默认 50，最大 200' },
+      },
+      output: jsonOutput,
+      async execute(args, exec) {
+        const comments = await getClient().listComments(
+          {
+            storyId: args.id,
+            ...(args.workspace_id ? { workspaceId: args.workspace_id } : {}),
+            ...(args.limit ? { limit: args.limit } : {}),
+          },
+          exec.signal,
+        )
+        return { count: comments.length, comments: comments.map((comment) => ({ ...comment })) }
+      },
+    }),
+  )
+
   ctx.logger?.info?.(`[tapd-in-dsh] tools ready; workspace=${config.workspaceId ?? process.env['TAPD_WORKSPACE_ID'] ?? '(unset)'}`)
 }
 

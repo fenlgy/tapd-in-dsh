@@ -149,7 +149,11 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 
 ### 面板
 
-侧栏 **TAPD** → 搜标题、点开看详情 → 「复制引用」把 `@tapd:story:<id>` 拿进剪贴板，粘进输入框即用。
+侧栏 **TAPD** → 按标题搜、按状态 / 处理人 / 迭代筛 → 点开看详情。
+
+- 列表上方是三个下拉框，选项来自 TAPD 本身（`workflows/status_map`、`iterations`、`workspaces/users`），换条件立刻重查，不用再点刷新；标题右侧显示「共 N 条」，底部是「加载更多」（每页 20 条）。
+- 每行右侧有个「插入」按钮（悬停变亮）：点了会把 `@tapd:story:<id>` 写进当前会话输入框的**光标处**，不用切窗口粘贴。拿不到输入框句柄时（没有打开会话 / 老版本宿主）自动退回复制，并提示已复制。
+- 详情页右上角也有「插入到对话」，旁边是「复制引用」「复制 ID」「在 TAPD 打开」。
 
 ### 界面
 
@@ -185,8 +189,19 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 | `tapd_list_stories` | 按标题/处理人/状态/迭代查需求，每条附带可粘贴的引用 token |
 | `tapd_get_story` | 读单个需求全文 |
 | `tapd_update_story` | 改状态 / 处理人 / 优先级（写操作） |
+| `tapd_create_story` | 新建需求（写操作） |
+| `tapd_add_comment` | 给需求加评论（写操作） |
+| `tapd_list_comments` | 读需求的评论 |
 
-写操作在工具描述里要求模型先复述字段、拿到确认再执行。这条约束靠模型遵守，插件层没有再拦一道 —— 如果你要硬拦，在 `tools/pre-execute` 上加白名单。
+三个写操作在工具描述里都要求模型先复述字段、拿到确认再执行。这条约束靠模型遵守，插件层没有再拦一道 —— 如果你要硬拦，在 `tools/pre-execute` 上加白名单。
+
+**写操作需要额外权限。** 个人访问令牌默认能读不一定能写：实测同一个令牌查需求正常，调 `stories/add`、`stories/update`、`comments/add` 会返回
+
+```
+403 user 582323776 doesn't have permission stories::add of workspace 40008871
+```
+
+插件会把这句话翻成人话，指出缺的是哪个权限点。要真正提单 / 评论 / 改状态，去 TAPD 项目 → 项目设置 → 成员与权限，给这个账号开 `stories::add` / `stories::update` / `comments::add`，或者改用有写权限的 API 账号。
 
 ## 面板保存不了 / 测试连接没反应？
 
@@ -211,12 +226,14 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 - **已核实（TAPD 开放平台文档）**：`GET/POST https://api.tapd.cn/stories`、`limit` 上限 200、`id` + `workspace_id` 为更新必填、返回 `{ status: 1, data, info }`、Basic Auth 用 `应用ID:应用秘钥`。
 - **未验证**：在真实 DSH 例程里跑通全链路。类型是按 `@deepseek-ai/dsh-tools@0.0.1-rc.1` / `dsh-llm@0.0.1-rc.1` / `dsh-agent@0.1.0-rc.6` 核的，而 `@deepseek-ai/dsh` 本身已经到 `0.2.1-rc.2`，装到你本地后如果签名有变，`npm run typecheck` 会直接报出来。
 - **已核实（读 DSH 内置包确认）**：客户端半区的模块约定 `window.__ModuleLoader__.load({ id, factory })`、`ctx.slots.register` 的 `main` / `sidebar.panellist` 两个插槽及其 `key` 对应关系、`ctx.locale.register(ns, { zh, en })` + `ctx.locale.bind(ns)`、宿主侧 `ctx.webServer.register({ kind: 'prefix', path, handler })`。浏览器半区与 `client.js` 的注册契约有冒烟测试（`npm test`）。
-- **未实现**：评论、缺陷（bug）、迭代接口；从面板把引用直接塞进输入框（需要 `inputActions.setDraft`，目前是复制到剪贴板）。
+- **已核实（读 `dsh-client-ui-conversation` 确认）**：`conversation.input.left` 是 `{ kind: 'list', scope: 'session' }` 的插槽；宿主的输入框动作面是 `captureInsertion()` + `insertText(text, span)`（不是只能整段 `setDraft`），所以「插入到对话」能落在光标处而不是覆盖草稿。拿不到 `inputActions` 时插件退回复制。
+- **未实现**：缺陷（bug）接口；面板里直接新建需求（目前只给工具，不进面板）。
 
 ## 路线
 
-- 面板里直接「插入到对话」：`conversation.input.left`（owner 为 `InputZone`）放按钮，调 `inputActions.setDraft(draft + ' @tapd:story:... ')`。
-- 补充评论 / bug / 迭代接口。
+- 缺陷（bug）与迭代表单：`/bugs` 与 `/iterations` 的写侧。
+- 面板里直接新建需求：把 `tapd_create_story` 的字段搬成一张表单。
+- 评论折叠进详情页（现在详情只放描述，评论走工具）。
 
 ## 开发
 

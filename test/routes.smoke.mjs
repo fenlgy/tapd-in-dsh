@@ -15,13 +15,25 @@ process.env.DSH_HOME = tmp
 const { registerRoutes } = await import('../lib/routes.js')
 
 /** 假 TAPD：按文档的 { status, data } 信封回话。 */
+let lastStoriesQuery = null
 const fake = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   const send = (payload) => {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify(payload))
   }
+  if (url.pathname === '/stories/count') return send({ status: 1, data: { count: 42 } })
+  if (url.pathname === '/workflows/status_map') {
+    return send({ status: 1, data: { planning: '规划中', developing: '实现中' } })
+  }
+  if (url.pathname === '/iterations') {
+    return send({ status: 1, data: [{ Iteration: { id: 'it1', name: '紧急更新', status: 'open' } }] })
+  }
+  if (url.pathname === '/workspaces/users') {
+    return send({ status: 1, data: [{ UserWorkspace: { user: 'fen', name: '芬' } }] })
+  }
   if (url.pathname !== '/stories') return send({ status: 0, info: 'not found' })
+  lastStoriesQuery = Object.fromEntries(url.searchParams)
   const id = url.searchParams.get('id')
   if (id) {
     return send({
@@ -111,6 +123,26 @@ check('列表返回 2 条', stories.length === 2, reply.json)
 check('行内带引用 token', stories[0]?.reference === '@tapd:story:101', stories[0]?.reference)
 check('长描述被截断', typeof stories[0]?.summary === 'string' && stories[0].summary.length <= 121, stories[0]?.summary?.length)
 check('列表不带正文', stories[0]?.description === undefined)
+check('带总数（用于「共 N 条」）', reply.json.total === 42, reply.json.total)
+
+reply = await call('GET', '/__stories?limit=2')
+check('满页且总数更大时 hasMore=true', reply.json.hasMore === true, reply.json)
+
+reply = await call('GET', '/__stories?limit=2&page=2')
+check('页码透传给 TAPD', lastStoriesQuery.page === '2', lastStoriesQuery.page)
+
+reply = await call('GET', '/__stories?status=developing&owner=fen&iteration=it1')
+check(
+  '状态 / 处理人 / 迭代三个筛选都透传',
+  lastStoriesQuery.status === 'developing' && lastStoriesQuery.owner === 'fen' && lastStoriesQuery.iteration_id === 'it1',
+  lastStoriesQuery,
+)
+
+reply = await call('GET', '/__filters')
+check('状态表映射成下拉项', reply.json.statuses?.some((item) => item.key === 'developing' && item.name === '实现中'), reply.json.statuses)
+check('迭代下拉项带 id 与名字', reply.json.iterations?.[0]?.id === 'it1' && reply.json.iterations?.[0]?.name === '紧急更新', reply.json.iterations)
+check('成员下拉项带 user 与名字', reply.json.members?.[0]?.user === 'fen' && reply.json.members?.[0]?.name === '芬', reply.json.members)
+check('筛选器全部成功时不报错', reply.json.errors === undefined, reply.json.errors)
 
 reply = await call('GET', '/__story?id=101')
 check('详情带正文', reply.json.story?.description === '正文内容', reply.json)

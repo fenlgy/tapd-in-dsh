@@ -67,6 +67,62 @@ export interface UpdateStoryPatch {
     readonly priority_label?: string;
     readonly current_user?: string;
 }
+/** 新建需求时能带的字段（TAPD POST /stories/add）。 */
+export interface CreateStoryInput {
+    readonly workspaceId?: string;
+    /** 标题，必填 */
+    readonly name: string;
+    readonly description?: string;
+    readonly owner?: string;
+    readonly priority_label?: string;
+    readonly iteration_id?: string;
+    readonly current_user?: string;
+}
+/** 需求评论（TAPD /comments）。 */
+export interface TapdComment {
+    readonly id: string;
+    readonly entry_id?: string;
+    readonly title?: string;
+    readonly description?: string;
+    readonly author?: string;
+    readonly created?: string;
+}
+export interface AddCommentInput {
+    readonly workspaceId?: string;
+    /** 需求 ID */
+    readonly storyId: string;
+    /** 评论正文，支持 HTML / 纯文本 */
+    readonly description: string;
+    /** 评论人 TAPD 用户名；不填由 TAPD 按凭据推断 */
+    readonly author?: string;
+}
+export interface ListCommentsQuery {
+    readonly workspaceId?: string;
+    readonly storyId: string;
+    readonly limit?: number;
+    readonly page?: number;
+}
+/** 迭代（TAPD /iterations）。 */
+export interface TapdIteration {
+    readonly id: string;
+    readonly name?: string;
+    readonly status?: string;
+    readonly startdate?: string;
+    readonly enddate?: string;
+}
+/** 项目成员（TAPD /workspaces/users），只留过滤器要用的两个字段。 */
+export interface TapdMember {
+    readonly user: string;
+    readonly name?: string;
+}
+/** 需求列表的一页结果，带总数供面板显示「共 N 条」。 */
+export interface StoryPage {
+    readonly stories: TapdStory[];
+    readonly total?: number;
+    readonly page: number;
+    readonly limit: number;
+    readonly hasMore: boolean;
+}
 export declare class TapdClient {
     private readonly options;
     private readonly baseUrl;
@@ -84,6 +140,38 @@ export declare class TapdClient {
         signal?: AbortSignal;
     }): Promise<TapdStory>;
     updateStory(patch: UpdateStoryPatch, signal?: AbortSignal): Promise<TapdStory>;
+    /** 新建需求（POST /stories/add）。需要令牌有 stories::add 权限。 */
+    createStory(input: CreateStoryInput, signal?: AbortSignal): Promise<TapdStory>;
+    /** 一条需求的评论，按时间正序。 */
+    listComments(query: ListCommentsQuery, signal?: AbortSignal): Promise<TapdComment[]>;
+    /** 给需求加一条评论（POST /comments/add）。需要令牌有 comments::add 权限。 */
+    addComment(input: AddCommentInput, signal?: AbortSignal): Promise<TapdComment>;
+    /** 需求总数，过滤器与列表保持一致，前端才能算「还有没有下一页」。 */
+    countStories(query?: ListStoriesQuery, signal?: AbortSignal): Promise<number | undefined>;
+    /** 一页需求 + 总数，面板用。 */
+    listStoriesPage(query?: ListStoriesQuery, signal?: AbortSignal): Promise<StoryPage>;
+    /** 项目迭代列表，面板的下拉框用。 */
+    listIterations(options?: {
+        workspaceId?: string;
+        limit?: number;
+        signal?: AbortSignal;
+    }): Promise<TapdIteration[]>;
+    /** 项目成员列表，面板「处理人」筛选与工具提示用。 */
+    listMembers(options?: {
+        workspaceId?: string;
+        limit?: number;
+        signal?: AbortSignal;
+    }): Promise<TapdMember[]>;
+    /** 需求状态表（状态码 → 中文名），面板的状态下拉框用。 */
+    statusMap(options?: {
+        workspaceId?: string;
+        signal?: AbortSignal;
+    }): Promise<Array<{
+        key: string;
+        name: string;
+    }>>;
+    /** 列表与计数共用的查询串，保证两边过滤条件一致。 */
+    private storyQuery;
     private assertConfigured;
     private request;
 }

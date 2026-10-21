@@ -39,8 +39,9 @@ window.__ModuleLoader__.load({
     const TEST_PATH = '/__test';
     const STORIES_PATH = '/__stories';
     const STORY_PATH = '/__story';
+    const FILTERS_PATH = '/__filters';
     /** 一次拉多少条需求。 */
-    const PAGE_LIMIT = 30;
+    const PAGE_LIMIT = 20;
 
     //#region transport
 
@@ -188,12 +189,15 @@ window.__ModuleLoader__.load({
 
     /**
      * 查需求列表。
-     * @param params 关键词 / 状态 / 条数
+     * @param params 关键词 / 状态 / 处理人 / 迭代 / 页码 / 条数
      */
     async function loadStories(params) {
       const query = new URLSearchParams();
       if (params && params.keyword) query.set('keyword', params.keyword);
       if (params && params.status) query.set('status', params.status);
+      if (params && params.owner) query.set('owner', params.owner);
+      if (params && params.iteration) query.set('iteration', params.iteration);
+      query.set('page', String((params && params.page) || 1));
       query.set('limit', String((params && params.limit) || PAGE_LIMIT));
       const path = `${STORIES_PATH}?${query.toString()}`;
       const payload = await send(path, { headers: { accept: 'application/json' } }, {
@@ -201,6 +205,19 @@ window.__ModuleLoader__.load({
         path: STORIES_PATH,
       });
       return payload || { configured: false, stories: [] };
+    }
+
+    /** 筛选器选项：状态表 / 迭代 / 成员。任何一项拿不到都只是少一个下拉框。 */
+    async function loadFilters() {
+      const payload = await send(FILTERS_PATH, { headers: { accept: 'application/json' } }, {
+        method: 'GET',
+        path: FILTERS_PATH,
+      });
+      return {
+        statuses: Array.isArray(payload && payload.statuses) ? payload.statuses : [],
+        iterations: Array.isArray(payload && payload.iterations) ? payload.iterations : [],
+        members: Array.isArray(payload && payload.members) ? payload.members : [],
+      };
     }
 
     /**
@@ -215,6 +232,54 @@ window.__ModuleLoader__.load({
       });
       if (payload && payload.error) throw new Error(String(payload.error));
       return (payload && payload.story) || null;
+    }
+
+    //#endregion
+    //#region 输入框桥
+
+    /**
+     * 宿主的会话输入框句柄。
+     *
+     * `conversation.input.left` 是 session 作用域的插槽，宿主通过 provide 通道把
+     * `inputActions`（`captureInsertion()` + `insertText()`）注进来。面板本身是 root
+     * 作用域，拿不到它，所以用一个不渲染的桥接组件把句柄存下来：面板点「插入」时
+     * 直接写进光标位置，拿不到就退回剪贴板，功能不会因此消失。
+     */
+    let composerActions = null;
+
+    /**
+     * 把引用 token 插到输入框光标处。
+     * @param reference 形如 `@tapd:story:1010`
+     * @returns 宿主是否接住了这次插入
+     */
+    function insertReference(reference) {
+      const actions = composerActions;
+      if (!actions || typeof actions.captureInsertion !== 'function' || typeof actions.insertText !== 'function') {
+        return false;
+      }
+      try {
+        const span = actions.captureInsertion();
+        const result = actions.insertText(` ${reference} `, span);
+        if (result && typeof result.then === 'function') {
+          result.catch(() => undefined);
+          return true;
+        }
+        return result !== false;
+      } catch {
+        return false;
+      }
+    }
+
+    /** 桥接组件：只为拿 session 作用域的 inputActions，本身不渲染。 */
+    function ComposerBridge(props) {
+      const actions = props.inputActions;
+      useEffect(() => {
+        composerActions = actions || null;
+        return () => {
+          if (composerActions === actions) composerActions = null;
+        };
+      }, [actions]);
+      return null;
     }
 
     //#endregion
@@ -308,8 +373,23 @@ window.__ModuleLoader__.load({
 .tapd-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
 .tapd-metaItem{display:inline-flex;align-items:center;gap:4px;min-width:0}
 .tapd-rowSummary{font-size:13px;line-height:18px;color:var(--dsw-alias-label-tertiary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
-.tapd-rowEnd{flex:none;color:var(--dsw-alias-label-dimmed);padding-top:4px}
+.tapd-rowEnd{flex:none;display:flex;align-items:center;gap:2px;color:var(--dsw-alias-label-dimmed);padding-top:2px}
 .tapd-row:hover .tapd-rowEnd{color:var(--dsw-alias-label-tertiary)}
+/* 行内「插入」：平时不抢视线，hover / 键盘聚焦时才露出来 */
+.tapd-rowAction{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;opacity:.45;transition:opacity .12s ease,background .12s ease,color .12s ease}
+.tapd-row:hover .tapd-rowAction,.tapd-row:focus-within .tapd-rowAction{opacity:1}
+.tapd-rowAction:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.tapd-rowAction:focus-visible{opacity:1;outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-1px}
+/* 筛选条 */
+.tapd-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tapd-selectWrap{position:relative;display:inline-flex;align-items:center;max-width:240px}
+.tapd-select{appearance:none;-webkit-appearance:none;box-sizing:border-box;height:32px;max-width:240px;padding:0 26px 0 10px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;cursor:pointer;text-overflow:ellipsis}
+.tapd-select:hover{border-color:var(--dsw-alias-border-l3)}
+.tapd-select:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-1px}
+.tapd-selectCaret{position:absolute;right:8px;display:inline-flex;color:var(--dsw-alias-label-tertiary);pointer-events:none}
+.tapd-filterReset{align-self:center;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
+.tapd-filterReset:hover{color:var(--dsw-alias-label-primary);text-decoration:underline}
+.tapd-more{display:flex;justify-content:center;padding-top:4px}
 
 /* 空态 / 骨架 */
 .tapd-empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:56px 16px 60px;text-align:center}
@@ -404,6 +484,8 @@ window.__ModuleLoader__.load({
         'M7.4 4.6l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1',
         'M8.6 11.4l-1 1a2.5 2.5 0 0 1-3.5-3.5l1-1',
       ],
+      insert: ['M8 2.4v7.2', 'M4.9 6.6 8 9.7l3.1-3.1', 'M2.8 12.6h10.4'],
+      filter: ['M2.8 4.2h10.4', 'M4.8 8h6.4', 'M6.6 11.8h2.8'],
     };
 
     /**
@@ -561,6 +643,35 @@ window.__ModuleLoader__.load({
     //#region 业务组件
 
     /**
+     * 筛选下拉框（受控）。
+     *
+     * 用原生 select：宿主的键盘、无障碍、输入法行为都白拿，样式再贴着
+     * `--dsw-*` 令牌改，和输入框同一套量法。
+     * @param props.value 当前值，空字符串表示「不限」
+     * @param props.onChange 变更回调
+     * @param props.options [{ value, label }]
+     * @param props.title 无障碍标题
+     */
+    function Select({ value, onChange, options, title }) {
+      return h(
+        'span',
+        { className: 'tapd-selectWrap' },
+        h(
+          'select',
+          {
+            className: 'tapd-select',
+            value: value || '',
+            title,
+            'aria-label': title,
+            onChange: (event) => onChange(event.target.value),
+          },
+          ...options.map((option) => h('option', { key: option.value, value: option.value }, option.label)),
+        ),
+        h('span', { className: 'tapd-selectCaret' }, h(Icon, { name: 'chevronDown', size: 12 })),
+      );
+    }
+
+    /**
      * TAPD 状态 → 标签色调。
      *
      * TAPD 的 `status` 既可能是中文（实现中），也可能是英文键（developing），
@@ -599,8 +710,9 @@ window.__ModuleLoader__.load({
      * 列表里的一行需求。
      * @param props.story 需求摘要
      * @param props.onOpen 点开回调
+     * @param props.onInsert 插入引用回调
      */
-    function StoryRow({ story, onOpen }) {
+    function StoryRow({ story, onOpen, onInsert, t }) {
       const meta = [];
       if (story.status) meta.push(h(Chip, { key: 'status', tone: toneOf(STATUS_TONES, story.status, 'neutral') }, story.status));
       if (story.owner) meta.push(h('span', { key: 'owner', className: 'tapd-metaItem' }, story.owner));
@@ -612,9 +724,23 @@ window.__ModuleLoader__.load({
       if (story.modified) meta.push(h('span', { key: 'modified', className: 'tapd-metaItem' }, String(story.modified).slice(0, 10)));
       meta.push(h('span', { key: 'id', className: 'tapd-metaItem tapd-mono' }, `#${story.id}`));
 
+      // 行本身可点开，所以用 div + role 而不是 button：里面还要放一个「插入」按钮，
+      // button 套 button 是非法结构，点了也会连带触发外层的打开。
       return h(
-        'button',
-        { type: 'button', className: 'tapd-row', onClick: () => onOpen(story), title: story.name || story.id },
+        'div',
+        {
+          className: 'tapd-row',
+          role: 'button',
+          tabIndex: 0,
+          title: story.name || story.id,
+          onClick: () => onOpen(story),
+          onKeyDown: (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onOpen(story);
+            }
+          },
+        },
         h(
           'span',
           { className: 'tapd-rowMain' },
@@ -622,7 +748,25 @@ window.__ModuleLoader__.load({
           h('span', { className: 'tapd-meta' }, ...meta),
           story.summary ? h('span', { className: 'tapd-rowSummary' }, story.summary) : null,
         ),
-        h('span', { className: 'tapd-rowEnd' }, h(Icon, { name: 'chevronRight', size: 16 })),
+        h(
+          'span',
+          { className: 'tapd-rowEnd' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'tapd-rowAction',
+              title: t('insert'),
+              'aria-label': t('insert'),
+              onClick: (event) => {
+                event.stopPropagation();
+                onInsert(story);
+              },
+            },
+            h(Icon, { name: 'insert', size: 14 }),
+          ),
+          h(Icon, { name: 'chevronRight', size: 16 }),
+        ),
       );
     }
 
@@ -926,6 +1070,12 @@ window.__ModuleLoader__.load({
       const [showSettings, setShowSettings] = useState(false);
       const [stories, setStories] = useState([]);
       const [keyword, setKeyword] = useState('');
+      const [filters, setFilters] = useState({ statuses: [], iterations: [], members: [] });
+      const [filter, setFilter] = useState({ status: '', owner: '', iteration: '' });
+      const [page, setPage] = useState(1);
+      const [total, setTotal] = useState(null);
+      const [hasMore, setHasMore] = useState(false);
+      const [loadingMore, setLoadingMore] = useState(false);
       const [busy, setBusy] = useState(false);
       const [note, setNote] = useState(null);
       const [detail, setDetail] = useState(null);
@@ -935,26 +1085,66 @@ window.__ModuleLoader__.load({
         [],
       );
 
+      /**
+       * 重新拉第一页。
+       * @param nextKeyword 关键词；不传就沿用当前输入框的值
+       * @param nextFilter 筛选条件；不传就沿用当前筛选
+       */
       const refresh = useCallback(
-        async (nextKeyword) => {
+        async (nextKeyword, nextFilter) => {
+          const active = nextFilter === undefined ? filter : nextFilter;
+          const kw = nextKeyword === undefined ? keyword : nextKeyword;
           setBusy(true);
           setNote(null);
           try {
-            const payload = await loadStories({ keyword: nextKeyword === undefined ? keyword : nextKeyword, limit: PAGE_LIMIT });
+            const payload = await loadStories({ keyword: kw, ...active, page: 1, limit: PAGE_LIMIT });
             setStories(Array.isArray(payload.stories) ? payload.stories : []);
+            setPage(1);
+            setTotal(typeof payload.total === 'number' ? payload.total : null);
+            setHasMore(Boolean(payload.hasMore));
             if (payload.configured === false) {
               setShowSettings(true);
               setNote({ kind: 'info', text: t('needConfig') });
             }
           } catch (error) {
             setStories([]);
+            setHasMore(false);
             fail(error);
           } finally {
             setBusy(false);
           }
         },
-        [fail, keyword, t],
+        [fail, filter, keyword, t],
       );
+
+      /** 换筛选条件：立刻重查第一页，不等用户再点按钮。 */
+      const applyFilter = useCallback(
+        (patch) => {
+          const next = { ...filter, ...patch };
+          setFilter(next);
+          return refresh(keyword, next);
+        },
+        [filter, keyword, refresh],
+      );
+
+      /** 追加下一页。 */
+      const loadMore = useCallback(async () => {
+        if (loadingMore || !hasMore) return;
+        setLoadingMore(true);
+        try {
+          const next = page + 1;
+          const payload = await loadStories({ keyword, ...filter, page: next, limit: PAGE_LIMIT });
+          const rows = Array.isArray(payload.stories) ? payload.stories : [];
+          setStories((prev) => prev.concat(rows));
+          setPage(next);
+          if (typeof payload.total === 'number') setTotal(payload.total);
+          setHasMore(Boolean(payload.hasMore));
+        } catch (error) {
+          fail(error);
+        } finally {
+          setLoadingMore(false);
+        }
+      }, [fail, filter, hasMore, keyword, loadingMore, page]);
 
       // 首次进入：读配置；没配好就直接把人送到配置表单前。
       useEffect(() => {
@@ -964,8 +1154,15 @@ window.__ModuleLoader__.load({
             const view = await loadConfig();
             if (!alive) return;
             setConfig(view);
-            if (view.configured) await refresh('');
-            else {
+            if (view.configured) {
+              // 筛选器选项和列表并行拉：选项拿不到只是少几个下拉框，不该拖住列表
+              loadFilters()
+                .then((next) => {
+                  if (alive) setFilters(next);
+                })
+                .catch(() => undefined);
+              await refresh('');
+            } else {
               setShowSettings(true);
               setNote({ kind: 'info', text: t('needConfig') });
             }
@@ -1028,15 +1225,31 @@ window.__ModuleLoader__.load({
       }, [detail, openStory]);
 
       const copy = useCallback(
-        async (text) => {
+        async (text, doneKey) => {
           try {
             await globalThis.navigator.clipboard.writeText(text);
-            setNote({ kind: 'ok', text: `${t('copied')} ${text}` });
+            setNote({ kind: 'ok', text: `${t(doneKey || 'copied')} ${text}` });
           } catch {
             setNote({ kind: 'error', text: `${t('copyFailed')} ${text}` });
           }
         },
         [t],
+      );
+
+      /**
+       * 插入引用：优先写进会话输入框的光标处；宿主没给输入框句柄时退回剪贴板。
+       * @param story 需求（至少要 id）
+       */
+      const insert = useCallback(
+        (story) => {
+          const reference = `@tapd:story:${story.id}`;
+          if (insertReference(reference)) {
+            setNote({ kind: 'ok', text: `${t('inserted')} ${reference}` });
+            return;
+          }
+          copy(reference, 'copiedInsert');
+        },
+        [copy, t],
       );
 
       const configured = Boolean(config && config.configured);
@@ -1085,6 +1298,11 @@ window.__ModuleLoader__.load({
         headerRight = h(
           'div',
           { className: 'tapd-toolbar' },
+          h(
+            Btn,
+            { size: 'sm', variant: 'outline', icon: h(Icon, { name: 'insert', size: 14 }), onClick: () => insert(story) },
+            t('insert'),
+          ),
           h(
             Btn,
             { size: 'sm', variant: 'ghost', icon: h(Icon, { name: 'link', size: 14 }), onClick: () => copy(`@tapd:story:${story.id}`) },
@@ -1188,6 +1406,8 @@ window.__ModuleLoader__.load({
           }),
         );
       } else {
+        const hasFilter = Boolean(filter.status || filter.owner || filter.iteration);
+        const showFilters = filters.statuses.length > 0 || filters.members.length > 0 || filters.iterations.length > 0;
         body = h(
           'div',
           { className: 'tapd-stack' },
@@ -1195,10 +1415,69 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'tapd-sectionHead' },
             h('h2', { className: 'tapd-cardTitle' }, t('listTitle')),
+            total !== null ? h('span', { className: 'tapd-hint' }, t('count', { n: total })) : null,
             keyword ? h('span', { className: 'tapd-hint' }, t('keywordHint', { keyword })) : null,
             busy ? h('span', { className: 'tapd-hint' }, t('loading')) : null,
           ),
-          h('div', { className: 'tapd-card' }, ...stories.map((story) => h(StoryRow, { key: story.id, story, onOpen: openStory }))),
+          showFilters
+            ? h(
+                'div',
+                { className: 'tapd-filters' },
+                h(Select, {
+                  value: filter.status,
+                  title: t('filterStatus'),
+                  onChange: (value) => applyFilter({ status: value }),
+                  options: [
+                    { value: '', label: t('anyStatus') },
+                    ...filters.statuses.map((item) => ({ value: item.key, label: item.name })),
+                  ],
+                }),
+                h(Select, {
+                  value: filter.owner,
+                  title: t('filterOwner'),
+                  onChange: (value) => applyFilter({ owner: value }),
+                  options: [
+                    { value: '', label: t('anyOwner') },
+                    ...filters.members.map((item) => ({
+                      value: item.user,
+                      label: item.name ? `${item.name}（${item.user}）` : item.user,
+                    })),
+                  ],
+                }),
+                h(Select, {
+                  value: filter.iteration,
+                  title: t('filterIteration'),
+                  onChange: (value) => applyFilter({ iteration: value }),
+                  options: [
+                    { value: '', label: t('anyIteration') },
+                    ...filters.iterations.map((item) => ({ value: item.id, label: item.name || item.id })),
+                  ],
+                }),
+                hasFilter
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'tapd-filterReset',
+                        onClick: () => applyFilter({ status: '', owner: '', iteration: '' }),
+                      },
+                      t('clearFilter'),
+                    )
+                  : null,
+              )
+            : null,
+          h(
+            'div',
+            { className: 'tapd-card' },
+            ...stories.map((story) => h(StoryRow, { key: story.id, story, onOpen: openStory, onInsert: insert, t })),
+          ),
+          hasMore
+            ? h(
+                'div',
+                { className: 'tapd-more' },
+                h(Btn, { variant: 'outline', size: 'sm', onClick: loadMore, disabled: loadingMore }, loadingMore ? t('loadingMore') : t('loadMore')),
+              )
+            : null,
         );
       }
 
@@ -1278,6 +1557,19 @@ window.__ModuleLoader__.load({
               loading: '读取中…',
               listTitle: '需求列表',
               keywordHint: '关键词「{keyword}」',
+              count: '共 {n} 条',
+              insert: '插入到对话',
+              inserted: '已插入',
+              copiedInsert: '当前会话没有输入框，已复制引用',
+              loadMore: '加载更多',
+              loadingMore: '加载中…',
+              filterStatus: '按状态筛选',
+              filterOwner: '按处理人筛选',
+              filterIteration: '按迭代筛选',
+              anyStatus: '全部状态',
+              anyOwner: '全部处理人',
+              anyIteration: '全部迭代',
+              clearFilter: '清除筛选',
               description: '描述',
               emptyTitle: '这个项目下没有需求',
               emptyText: '需求都建在别的项目里？去设置里换一个项目 ID。',
@@ -1334,6 +1626,19 @@ window.__ModuleLoader__.load({
               loading: 'Loading…',
               listTitle: 'Stories',
               keywordHint: 'keyword "{keyword}"',
+              count: '{n} total',
+              insert: 'Insert into chat',
+              inserted: 'Inserted',
+              copiedInsert: 'No composer here — reference copied',
+              loadMore: 'Load more',
+              loadingMore: 'Loading…',
+              filterStatus: 'Filter by status',
+              filterOwner: 'Filter by owner',
+              filterIteration: 'Filter by iteration',
+              anyStatus: 'Any status',
+              anyOwner: 'Any owner',
+              anyIteration: 'Any iteration',
+              clearFilter: 'Clear filters',
               description: 'Description',
               emptyTitle: 'No stories in this project',
               emptyText: 'Stories live in another project? Change the project ID in settings.',
@@ -1385,6 +1690,12 @@ window.__ModuleLoader__.load({
           },
           PanelIcon,
         ),
+      );
+
+      // 会话输入框的桥：挂在输入框左侧插槽里，只为拿 session 作用域的 inputActions，
+      // 让面板的「插入」能写到光标处。拿不到（老宿主 / 没有会话）就静默退回复制。
+      ctx.slots.inject('conversation.input.left', () =>
+        ctx.slots.register({ name: 'conversation.input.left', locale: NS }, ComposerBridge),
       );
     }
 

@@ -88,6 +88,19 @@ assert.equal(entry.id, main.key, '侧栏入口 id 与 main key 必须一致，�
 assert.equal(typeof entry.label, 'function', '侧栏入口的 label 必须是函数（随语言切换）')
 assert.equal(entry.label(), 'TAPD', '侧栏入口标题应为 TAPD')
 
+// 输入框桥必须挂在会话输入框插槽上，否则面板的「插入」拿不到 inputActions。
+const bridge = slots.find((decl) => decl.name === 'conversation.input.left')
+assert.ok(bridge, '没有注册 conversation.input.left（插入到对话会退化成复制）')
+
+// 词典必须覆盖代码里出现的每个 t('key')，漏 key 时界面会直接显示 key 本身。
+const dictZh = registrations.find((item) => item.kind === 'locale')?.dict?.zh ?? {}
+const dictEn = registrations.find((item) => item.kind === 'locale')?.dict?.en ?? {}
+const usedKeys = new Set([...source.matchAll(/\bt\('([A-Za-z0-9_]+)'/g)].map((match) => match[1]))
+const missingZh = [...usedKeys].filter((key) => !(key in dictZh))
+const missingEn = [...usedKeys].filter((key) => !(key in dictEn))
+assert.deepEqual(missingZh, [], `中文词典缺少：${missingZh.join(', ')}`)
+assert.deepEqual(missingEn, [], `英文词典缺少：${missingEn.join(', ')}`)
+
 const pageComp = registrations.find((item) => item.kind === 'slot' && item.decl.name === 'main').component
 assert.equal(typeof pageComp, 'function', 'main 必须注册一个组件')
 

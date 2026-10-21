@@ -4,8 +4,9 @@
  *   GET  /tapd/__config                     读有效配置（密钥只回存在性标记）
  *   PUT  /tapd/__config                     合并并保存配置到 $DSH_HOME/tapd/config.json
  *   POST /tapd/__test                       用当前配置真打一次 TAPD，验证凭据
- *   GET  /tapd/__stories?keyword=&status=   需求列表（含可粘贴的引用 token）
+ *   GET  /tapd/__stories?keyword=&status=   需求列表（含可粘贴的引用 token，带总数与是否还有下一页）
  *   GET  /tapd/__story?id=                  单条需求全文
+ *   GET  /tapd/__filters                    筛选器的选项：状态表 / 迭代 / 成员
  *
  * 浏览器只和这个同源前缀打交道，凭据留在 Node 侧，不进入跨域请求。
  */

@@ -79,6 +79,69 @@ export interface UpdateStoryPatch {
   readonly current_user?: string
 }
 
+/** 新建需求时能带的字段（TAPD POST /stories/add）。 */
+export interface CreateStoryInput {
+  readonly workspaceId?: string
+  /** 标题，必填 */
+  readonly name: string
+  readonly description?: string
+  readonly owner?: string
+  readonly priority_label?: string
+  readonly iteration_id?: string
+  readonly current_user?: string
+}
+
+/** 需求评论（TAPD /comments）。 */
+export interface TapdComment {
+  readonly id: string
+  readonly entry_id?: string
+  readonly title?: string
+  readonly description?: string
+  readonly author?: string
+  readonly created?: string
+}
+
+export interface AddCommentInput {
+  readonly workspaceId?: string
+  /** 需求 ID */
+  readonly storyId: string
+  /** 评论正文，支持 HTML / 纯文本 */
+  readonly description: string
+  /** 评论人 TAPD 用户名；不填由 TAPD 按凭据推断 */
+  readonly author?: string
+}
+
+export interface ListCommentsQuery {
+  readonly workspaceId?: string
+  readonly storyId: string
+  readonly limit?: number
+  readonly page?: number
+}
+
+/** 迭代（TAPD /iterations）。 */
+export interface TapdIteration {
+  readonly id: string
+  readonly name?: string
+  readonly status?: string
+  readonly startdate?: string
+  readonly enddate?: string
+}
+
+/** 项目成员（TAPD /workspaces/users），只留过滤器要用的两个字段。 */
+export interface TapdMember {
+  readonly user: string
+  readonly name?: string
+}
+
+/** 需求列表的一页结果，带总数供面板显示「共 N 条」。 */
+export interface StoryPage {
+  readonly stories: TapdStory[]
+  readonly total?: number
+  readonly page: number
+  readonly limit: number
+  readonly hasMore: boolean
+}
+
 const STORY_FIELDS = [
   'id',
   'workspace_id',
@@ -133,17 +196,9 @@ export class TapdClient {
 
   async listStories(query: ListStoriesQuery = {}, signal?: AbortSignal): Promise<TapdStory[]> {
     this.assertConfigured()
-    const params = new URLSearchParams({
-      workspace_id: this.resolveWorkspaceId(query.workspaceId),
-      limit: String(Math.min(query.limit ?? this.pageSize, 200)),
-      page: String(query.page ?? 1),
-      fields: STORY_FIELDS,
-      order: 'created desc',
-    })
-    if (query.name) params.set('name', query.name)
-    if (query.owner) params.set('owner', query.owner)
-    if (query.status) params.set('status', query.status)
-    if (query.iterationId) params.set('iteration_id', query.iterationId)
+    const params = this.storyQuery(query)
+    params.set('fields', STORY_FIELDS)
+    params.set('order', 'created desc')
 
     const envelope = await this.request<TapdStoryEnvelope[]>(`/stories?${params}`, { signal })
     return (envelope.data ?? []).map((row) => normalizeStory(row.Story)).filter(isStory)
@@ -174,10 +229,169 @@ export class TapdClient {
     if (patch.current_user) body.set('current_user', patch.current_user)
 
     const envelope = await this.request<TapdStoryEnvelope>('/stories', { method: 'POST', body, signal })
-    const raw = Array.isArray(envelope.data) ? envelope.data[0]?.Story : envelope.data?.Story
-    const story = normalizeStory(raw)
+    const story = pickStory(envelope.data)
     if (!story) throw new TapdError(`TAPD 更新需求 ${patch.id} 返回了空结果。`)
     return story
+  }
+
+  /** 新建需求（POST /stories/add）。需要令牌有 stories::add 权限。 */
+  async createStory(input: CreateStoryInput, signal?: AbortSignal): Promise<TapdStory> {
+    this.assertConfigured()
+    const name = input.name.trim()
+    if (!name) throw new TapdError('新建需求必须给标题（name）。')
+    const body = new URLSearchParams({
+      workspace_id: this.resolveWorkspaceId(input.workspaceId),
+      name,
+    })
+    if (input.description) body.set('description', input.description)
+    if (input.owner) body.set('owner', input.owner)
+    if (input.priority_label) body.set('priority', input.priority_label)
+    if (input.iteration_id) body.set('iteration_id', input.iteration_id)
+    if (input.current_user) body.set('current_user', input.current_user)
+
+    const envelope = await this.request<TapdStoryEnvelope>('/stories/add', { method: 'POST', body, signal })
+    const story = pickStory(envelope.data)
+    if (!story) throw new TapdError('TAPD 新建需求返回了空结果。')
+    return story
+  }
+
+  /** 一条需求的评论，按时间正序。 */
+  async listComments(query: ListCommentsQuery, signal?: AbortSignal): Promise<TapdComment[]> {
+    this.assertConfigured()
+    const params = new URLSearchParams({
+      workspace_id: this.resolveWorkspaceId(query.workspaceId),
+      entry_type: 'stories',
+      entry_id: query.storyId,
+      limit: String(Math.min(query.limit ?? 50, 200)),
+      page: String(query.page ?? 1),
+      order: 'created asc',
+    })
+    const envelope = await this.request<TapdCommentEnvelope[]>(`/comments?${params}`, { signal })
+    return (envelope.data ?? []).map((row) => normalizeComment(row.Comment)).filter(isPresent)
+  }
+
+  /** 给需求加一条评论（POST /comments/add）。需要令牌有 comments::add 权限。 */
+  async addComment(input: AddCommentInput, signal?: AbortSignal): Promise<TapdComment> {
+    this.assertConfigured()
+    const description = input.description.trim()
+    if (!description) throw new TapdError('评论正文不能为空。')
+    const body = new URLSearchParams({
+      workspace_id: this.resolveWorkspaceId(input.workspaceId),
+      entry_type: 'stories',
+      entry_id: input.storyId,
+      description,
+    })
+    if (input.author) body.set('author', input.author)
+
+    const envelope = await this.request<TapdCommentEnvelope>('/comments/add', {
+      method: 'POST',
+      body,
+      signal,
+    })
+    const comment = normalizeComment(envelope.data?.Comment)
+    if (!comment) throw new TapdError(`TAPD 给需求 ${input.storyId} 加评论返回了空结果。`)
+    return comment
+  }
+
+  /** 需求总数，过滤器与列表保持一致，前端才能算「还有没有下一页」。 */
+  async countStories(query: ListStoriesQuery = {}, signal?: AbortSignal): Promise<number | undefined> {
+    this.assertConfigured()
+    const params = this.storyQuery(query)
+    const envelope = await this.request<{ count?: string | number }>(`/stories/count?${params}`, { signal })
+    const count = Number(envelope.data?.count)
+    return Number.isFinite(count) ? count : undefined
+  }
+
+  /** 一页需求 + 总数，面板用。 */
+  async listStoriesPage(query: ListStoriesQuery = {}, signal?: AbortSignal): Promise<StoryPage> {
+    const limit = Math.min(query.limit ?? this.pageSize, 200)
+    const page = query.page ?? 1
+    const stories = await this.listStories({ ...query, limit, page }, signal)
+    // 总数量不出来不影响列表本身，只是没法显示「共 N 条」
+    const total = await this.countStories(query, signal).catch(() => undefined)
+    return {
+      stories,
+      ...(total === undefined ? {} : { total }),
+      page,
+      limit,
+      hasMore: stories.length >= limit && (total === undefined || page * limit < total),
+    }
+  }
+
+  /** 项目迭代列表，面板的下拉框用。 */
+  async listIterations(options: { workspaceId?: string; limit?: number; signal?: AbortSignal } = {}): Promise<TapdIteration[]> {
+    this.assertConfigured()
+    const params = new URLSearchParams({
+      workspace_id: this.resolveWorkspaceId(options.workspaceId),
+      limit: String(Math.min(options.limit ?? 50, 200)),
+      order: 'created desc',
+    })
+    const envelope = await this.request<TapdIterationEnvelope[]>(`/iterations?${params}`, {
+      signal: options.signal,
+    })
+    return (envelope.data ?? [])
+      .map((row) => {
+        const raw = row.Iteration
+        const id = str(raw?.id)
+        if (!id) return undefined
+        return {
+          id,
+          ...(str(raw?.name) ? { name: str(raw?.name) } : {}),
+          ...(str(raw?.status) ? { status: str(raw?.status) } : {}),
+          ...(str(raw?.startdate) ? { startdate: str(raw?.startdate) } : {}),
+          ...(str(raw?.enddate) ? { enddate: str(raw?.enddate) } : {}),
+        }
+      })
+      .filter(isPresent)
+  }
+
+  /** 项目成员列表，面板「处理人」筛选与工具提示用。 */
+  async listMembers(options: { workspaceId?: string; limit?: number; signal?: AbortSignal } = {}): Promise<TapdMember[]> {
+    this.assertConfigured()
+    const params = new URLSearchParams({
+      workspace_id: this.resolveWorkspaceId(options.workspaceId),
+      limit: String(Math.min(options.limit ?? 100, 200)),
+    })
+    const envelope = await this.request<TapdMemberEnvelope[]>(`/workspaces/users?${params}`, {
+      signal: options.signal,
+    })
+    return (envelope.data ?? [])
+      .map((row) => {
+        const user = str(row.UserWorkspace?.user)
+        if (!user) return undefined
+        return { user, ...(str(row.UserWorkspace?.name) ? { name: str(row.UserWorkspace?.name) } : {}) }
+      })
+      .filter(isPresent)
+  }
+
+  /** 需求状态表（状态码 → 中文名），面板的状态下拉框用。 */
+  async statusMap(options: { workspaceId?: string; signal?: AbortSignal } = {}): Promise<Array<{ key: string; name: string }>> {
+    this.assertConfigured()
+    const params = new URLSearchParams({
+      workspace_id: this.resolveWorkspaceId(options.workspaceId),
+      system: 'story',
+    })
+    const envelope = await this.request<Record<string, string>>(`/workflows/status_map?${params}`, {
+      signal: options.signal,
+    })
+    const data = envelope.data ?? {}
+    return Object.entries(data)
+      .filter(([key, name]) => Boolean(key) && typeof name === 'string')
+      .map(([key, name]) => ({ key, name }))
+  }
+
+  /** 列表与计数共用的查询串，保证两边过滤条件一致。 */
+  private storyQuery(query: ListStoriesQuery): URLSearchParams {
+    const params = new URLSearchParams({
+      workspace_id: this.resolveWorkspaceId(query.workspaceId),
+      limit: String(Math.min(query.limit ?? this.pageSize, 200)),
+      page: String(query.page ?? 1),
+    })
+    if (query.name) params.set('name', query.name)
+    if (query.owner) params.set('owner', query.owner)
+    if (query.status) params.set('status', query.status)
+    if (query.iterationId) params.set('iteration_id', query.iterationId)
+    return params
   }
 
   private assertConfigured(): void {
@@ -237,6 +451,43 @@ export class TapdClient {
 
 interface TapdStoryEnvelope {
   readonly Story?: Record<string, unknown>
+}
+
+interface TapdCommentEnvelope {
+  readonly Comment?: Record<string, unknown>
+}
+
+interface TapdIterationEnvelope {
+  readonly Iteration?: Record<string, unknown>
+}
+
+interface TapdMemberEnvelope {
+  readonly UserWorkspace?: Record<string, unknown>
+}
+
+/** 更新 / 新建接口的返回可能是单个对象，也可能是长度为 1 的数组。 */
+function pickStory(data: TapdStoryEnvelope | TapdStoryEnvelope[] | undefined): TapdStory | undefined {
+  if (!data) return undefined
+  const raw = Array.isArray(data) ? data[0]?.Story : data.Story
+  return normalizeStory(raw)
+}
+
+function normalizeComment(raw: Record<string, unknown> | undefined): TapdComment | undefined {
+  if (!raw) return undefined
+  const id = str(raw.id)
+  if (!id) return undefined
+  return {
+    id,
+    ...(str(raw.entry_id) ? { entry_id: str(raw.entry_id) } : {}),
+    ...(str(raw.title) ? { title: str(raw.title) } : {}),
+    ...(str(raw.description) ? { description: str(raw.description) } : {}),
+    ...(str(raw.author) ? { author: str(raw.author) } : {}),
+    ...(str(raw.created) ? { created: str(raw.created) } : {}),
+  }
+}
+
+function isPresent<T>(value: T | undefined): value is T {
+  return value !== undefined
 }
 
 function normalizeStory(raw: Record<string, unknown> | undefined): TapdStory | undefined {
@@ -312,6 +563,11 @@ function explainStatus(status: number, info?: string): string {
   }
   if (/don't have permission to access this company|no permission to access this company/i.test(text)) {
     return '（个人令牌没有公司级读权限：这是正常的，个人令牌只能查项目内的需求，不需要拉公司项目列表）'
+  }
+  // 写操作最容易撞上的就是权限：令牌能读不一定能写，必须把具体权限点报出来
+  const permission = /doesn'?t have permission ([\w:]+)/i.exec(text)
+  if (permission?.[1]) {
+    return `（当前令牌没有「${permission[1]}」权限：去 TAPD 项目 → 项目设置 → 成员与权限，给这个账号开对应权限，或换一个有写权限的 API 账号）`
   }
   const hints: Record<number, string> = {
     401: '（没带上鉴权信息，确认填了个人访问令牌或 API 账号）',

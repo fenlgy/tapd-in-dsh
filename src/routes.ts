@@ -4,8 +4,9 @@
  *   GET  /tapd/__config                     读有效配置（密钥只回存在性标记）
  *   PUT  /tapd/__config                     合并并保存配置到 $DSH_HOME/tapd/config.json
  *   POST /tapd/__test                       用当前配置真打一次 TAPD，验证凭据
- *   GET  /tapd/__stories?keyword=&status=   需求列表（含可粘贴的引用 token）
+ *   GET  /tapd/__stories?keyword=&status=   需求列表（含可粘贴的引用 token，带总数与是否还有下一页）
  *   GET  /tapd/__story?id=                  单条需求全文
+ *   GET  /tapd/__filters                    筛选器的选项：状态表 / 迭代 / 成员
  *
  * 浏览器只和这个同源前缀打交道，凭据留在 Node 侧，不进入跨域请求。
  */
@@ -26,6 +27,8 @@ const TEST_PATH = '/__test'
 const STORIES_PATH = '/__stories'
 /** 单条需求端点。 */
 const STORY_PATH = '/__story'
+/** 筛选器选项端点。 */
+const FILTERS_PATH = '/__filters'
 
 /** 宿主 web server 的最小接口，避免把 dsh-host-webserver 变成硬依赖。 */
 interface WebServerLike {
@@ -65,6 +68,8 @@ export function registerRoutes(webServer: WebServerLike, rowConfig: StoredConfig
         if (sub === STORIES_PATH && req.method === 'GET') return await runStories(res, url, rowConfig)
 
         if (sub === STORY_PATH && req.method === 'GET') return await runStory(res, url, rowConfig)
+
+        if (sub === FILTERS_PATH && req.method === 'GET') return await runFilters(res, rowConfig)
 
         return sendJson(res, 404, { error: `未知端点 ${sub}` })
       } catch (error) {
@@ -144,17 +149,55 @@ async function runStories(res: ServerResponse, url: URL, rowConfig: StoredConfig
     sendJson(res, 200, { configured: false, stories: [] })
     return
   }
-  const stories = await client.listStories({
+  const page = await client.listStoriesPage({
     ...(url.searchParams.get('keyword') ? { name: url.searchParams.get('keyword') as string } : {}),
     ...(url.searchParams.get('status') ? { status: url.searchParams.get('status') as string } : {}),
     ...(url.searchParams.get('owner') ? { owner: url.searchParams.get('owner') as string } : {}),
+    ...(url.searchParams.get('iteration') ? { iterationId: url.searchParams.get('iteration') as string } : {}),
     limit: clampInt(url.searchParams.get('limit'), 20, 1, 200),
     page: clampInt(url.searchParams.get('page'), 1, 1, 1000),
   })
   sendJson(res, 200, {
     configured: true,
     workspaceId: view.workspaceId,
-    stories: stories.map(summarize),
+    page: page.page,
+    limit: page.limit,
+    hasMore: page.hasMore,
+    ...(page.total === undefined ? {} : { total: page.total }),
+    stories: page.stories.map(summarize),
+  })
+}
+
+/**
+ * 筛选器选项：状态表、迭代、成员。
+ *
+ * 三件事互相独立，任何一项失败都只影响对应的下拉框（例如成员接口没有权限），
+ * 所以用 allSettled 而不是 Promise.all——列表本身不该被筛选器拖垮。
+ */
+async function runFilters(res: ServerResponse, rowConfig: StoredConfig): Promise<void> {
+  const view = publicConfig(rowConfig)
+  if (!view.configured) {
+    sendJson(res, 200, { configured: false, statuses: [], iterations: [], members: [] })
+    return
+  }
+  const client = createClient(rowConfig)
+  const [statuses, iterations, members] = await Promise.allSettled([
+    client.statusMap(),
+    client.listIterations(),
+    client.listMembers(),
+  ])
+  const errors: string[] = []
+  const pick = <T>(result: PromiseSettledResult<T>, fallback: T, label: string): T => {
+    if (result.status === 'fulfilled') return result.value
+    errors.push(`${label}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`)
+    return fallback
+  }
+  sendJson(res, 200, {
+    configured: true,
+    statuses: pick(statuses, [], 'statuses'),
+    iterations: pick(iterations, [], 'iterations'),
+    members: pick(members, [], 'members'),
+    ...(errors.length ? { errors } : {}),
   })
 }
 
