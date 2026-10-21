@@ -41,6 +41,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node test/routes.smoke.mjs && node test/client.smoke.mjs && node test/error.smoke.mjs",
     "check": "node scripts/check.mjs",
+    "sync:install": "node scripts/sync-install.mjs",
+    "sync:check": "node scripts/sync-install.mjs --check",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {

@@ -237,6 +237,20 @@ npm test              # 宿主路由 + 客户端注册契约的冒烟测试
 dsh plugin --profile web add link:$PWD
 ```
 
+### 更新已装的 profile，不用卸载重装
+
+装进 profile 的是 GitHub tarball 的一份拷贝，改完代码要么重新 `dsh plugin add`，要么把产物同步过去。走网络那步又慢又容易卡（拉 codeload 需要出网），所以带了个本地同步：
+
+```bash
+npm run build            # 先确保 lib/ 是新的
+npm run sync:install     # 覆盖进所有装了本插件的 profile
+npm run sync:check       # 只看版本差，不写盘
+```
+
+它会按 `package.json` 的 `files` 清单覆盖 `~/.dsh/profiles/*/node_modules/tapd-in-dsh`，**不碰配置**：令牌、项目 ID 都在 `~/.dsh/tapd/config.json`（可用 `DSH_HOME` 改根目录），所以不用重填。改完重启 DSH 生效。
+
+同步让已装目录的版本比 `pnpm-lock.yaml` 里记的新——这只影响「以后是否又要重新拉一次」，下次从图形界面或 pnpm 更新时会重新对齐到推送过的那份，行为一致。
+
 源码挂载调试（官方 scratch 流程）：
 
 ```yaml
