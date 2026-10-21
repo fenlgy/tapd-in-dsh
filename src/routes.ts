@@ -91,7 +91,10 @@ async function runTest(res: ServerResponse, rowConfig: StoredConfig): Promise<vo
   const client = createClient(rowConfig)
   const view = publicConfig(rowConfig)
   if (!view.configured) {
-    sendJson(res, 200, { ok: false, error: '还没填鉴权：个人访问令牌，或开放应用 ID + 秘钥' })
+    sendJson(res, 200, {
+      ok: false,
+      error: '还没填鉴权：TAPD 免费版填「个人访问令牌」即可（个人设置 → 个人访问令牌）；付费版也可用开放应用 ID + 秘钥',
+    })
     return
   }
   if (!view.workspaceId) {
@@ -107,7 +110,11 @@ async function runTest(res: ServerResponse, rowConfig: StoredConfig): Promise<vo
       ...(stories[0]?.name ? { sample: stories[0].name } : {}),
     })
   } catch (error) {
-    sendJson(res, 200, { ok: false, error: error instanceof TapdError ? error.message : String(error) })
+    sendJson(res, 200, {
+      ok: false,
+      error: error instanceof TapdError ? error.message : String(error),
+      ...(error instanceof TapdError && error.status ? { status: error.status } : {}),
+    })
   }
 }
 

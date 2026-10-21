@@ -365,7 +365,7 @@ window.__ModuleLoader__.load({
           secret: true,
           value: form.apiToken,
           onChange: set('apiToken'),
-          hint: '最省事的方式：Bearer 鉴权，只读需求也能用。',
+          hint: '免费版就用这个：TAPD 免费企业有 2000 次/天的个人令牌额度。位置在 TAPD 右上角头像 → 个人设置 → 个人访问令牌。',
         }),
         h(
           'div',
