@@ -58,6 +58,18 @@ const cases = [
     body: { status: 403, data: '', info: 'forbidden' },
     expect: ['forbidden', '未开通 API 账号'],
   },
+  {
+    name: '403 跨企业填错项目 ID',
+    status: 403,
+    body: { status: 403, data: '', info: 'Personal token company does not match workspace' },
+    expect: ['company does not match', '只能访问自己企业的项目'],
+  },
+  {
+    name: '403 不是该项目成员',
+    status: 403,
+    body: { status: 403, data: '', info: 'api account tapd_my_token not allowed to access project 36821177' },
+    expect: ['not allowed to access project', '项目成员'],
+  },
 ]
 
 let failed = 0
