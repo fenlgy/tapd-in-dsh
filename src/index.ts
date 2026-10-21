@@ -1,5 +1,5 @@
 /**
- * dsh-tapd —— DeepSeek Harness 插件宿主半区。
+ * tapd-in-dsh —— DeepSeek Harness 插件宿主半区。
  *
  * 两件事：
  * 1. 注册 tapd_* 工具，让模型能查询 / 更新 TAPD 需求；
@@ -14,7 +14,7 @@ import { collectReferences, formatReference, renderReferenceFailure, renderStory
 import { TapdClient, TapdError } from './tapd.js'
 import type { TapdStory } from './tapd.js'
 
-export const name = 'dsh-tapd'
+export const name = 'tapd-in-dsh'
 
 /** 只依赖工具注册表；事件监听走 cordis 核心，无需额外服务。 */
 export const inject = ['tools']
@@ -162,7 +162,7 @@ function registerTools(ctx: Context, client: TapdClient, config: Config): void {
     }),
   )
 
-  ctx.logger?.info?.(`[dsh-tapd] tools ready; workspace=${config.workspaceId ?? process.env['TAPD_WORKSPACE_ID'] ?? '(unset)'}`)
+  ctx.logger?.info?.(`[tapd-in-dsh] tools ready; workspace=${config.workspaceId ?? process.env['TAPD_WORKSPACE_ID'] ?? '(unset)'}`)
 }
 
 /**
@@ -207,7 +207,7 @@ function registerReferenceInjection(ctx: Context, client: TapdClient, config: Co
           content: blocks,
           source: {
             kind: 'plugin',
-            plugin: 'dsh-tapd',
+            plugin: 'tapd-in-dsh',
             form: 'notice',
             summary: `已注入 ${references.length} 个 TAPD 需求`,
           },

@@ -1,4 +1,4 @@
-# dsh-tapd
+# tapd-in-dsh
 
 DeepSeek Harness（DSH）插件：把 TAPD 需求接进会话。
 
@@ -16,7 +16,7 @@ DeepSeek Harness（DSH）插件：把 TAPD 需求接进会话。
 dsh plugin --profile web add github:fenlgy/tapd-in-dsh
 
 # 从 npm 装（发布之后）
-dsh plugin --profile web add dsh-tapd
+dsh plugin --profile web add tapd-in-dsh
 ```
 
 装完重启：
@@ -136,7 +136,7 @@ dsh plugin --profile web add link:$PWD
 # scratch.yml
 - insert:
     - id: tapd-dev
-      name: '/绝对路径/dsh-tapd/src/index.ts'
+      name: '/绝对路径/tapd-in-dsh/src/index.ts'
 ```
 
 ```bash
