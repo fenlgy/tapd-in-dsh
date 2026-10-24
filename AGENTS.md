@@ -56,4 +56,4 @@ npm run sync:install      # 按 package.json 的 files 清单覆盖 ~/.dsh/profi
 
 - 行为改动必须补 `test/*.smoke.mjs` 断言，`npm test` 全绿才允许提交。
 - **接口形状以实测为准，不以文档为准**：改 TAPD 相关逻辑前，先用 `npm run check -- --token=... --workspace=...` 或 `curl` 打真实接口确认字段与权限，再动手。
-- TAPD 描述字段是 TinyMCE 的 HTML 源码（`<div>/<p>/<img src="/tfl/...">`），图片直连会跳登录页，必须走 `files/get_image` 换签名地址——涉及正文渲染时别绕过这条。
+- TAPD 描述字段是 TinyMCE 的 HTML 源码（`<div>/<p>/<img src="/tfl/...">`），图片直连会跳登录页，必须走 `files/get_image` 换签名地址——涉及正文渲染时别绕过这条。签名地址回的 `Content-Type` 是残缺的 `image`（没有子类型），要按后缀补全，否则浏览器不保证解码。

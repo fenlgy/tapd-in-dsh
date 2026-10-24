@@ -146,6 +146,17 @@ export declare class TapdClient {
     listComments(query: ListCommentsQuery, signal?: AbortSignal): Promise<TapdComment[]>;
     /** 给需求加一条评论（POST /comments/add）。需要令牌有 comments::add 权限。 */
     addComment(input: AddCommentInput, signal?: AbortSignal): Promise<TapdComment>;
+    /**
+     * 描述正文里的图片换成可直接下载的临时地址。
+     *
+     * 正文里的 `<img src="/tfl/captures/...">` 挂在 www.tapd.cn 上，要浏览器登录态才给；
+     * Open API 能用令牌换一个签名地址（默认 300 秒有效），面板据此匿名取图。
+     * 文档：GET /files/get_image?workspace_id=&image_path=
+     */
+    getImageUrl(imagePath: string, options?: {
+        workspaceId?: string;
+        signal?: AbortSignal;
+    }): Promise<string>;
     /** 需求总数，过滤器与列表保持一致，前端才能算「还有没有下一页」。 */
     countStories(query?: ListStoriesQuery, signal?: AbortSignal): Promise<number | undefined>;
     /** 一页需求 + 总数，面板用。 */

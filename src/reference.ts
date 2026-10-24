@@ -6,6 +6,7 @@
  */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { TapdStory } from './tapd.js'
+import { htmlToText } from './richtext.js'
 
 /**
  * 支持的引用写法：
@@ -44,7 +45,9 @@ export function formatReference(story: TapdStory): string {
 
 /** 单条需求的模型可见上下文。 */
 export function renderStoryContext(story: TapdStory, maxBodyChars: number): ContentBlock[] {
-  const description = story.description ?? '（无描述）'
+  // TAPD 的 description 是富文本 HTML：给模型的是折叠后的正文，
+  // 不然整段标签会挤掉真正有用的字数（图片折成 [图片] 保留位置信息）。
+  const description = htmlToText(story.description ?? '') || '（无描述）'
   const body = description.length > maxBodyChars ? `${description.slice(0, maxBodyChars)}\n…（描述已截断）` : description
   const lines = [
     `[TAPD 需求引用] ${story.name ?? '(无标题)'}`,

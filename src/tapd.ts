@@ -293,6 +293,30 @@ export class TapdClient {
     return comment
   }
 
+  /**
+   * 描述正文里的图片换成可直接下载的临时地址。
+   *
+   * 正文里的 `<img src="/tfl/captures/...">` 挂在 www.tapd.cn 上，要浏览器登录态才给；
+   * Open API 能用令牌换一个签名地址（默认 300 秒有效），面板据此匿名取图。
+   * 文档：GET /files/get_image?workspace_id=&image_path=
+   */
+  async getImageUrl(
+    imagePath: string,
+    options: { workspaceId?: string; signal?: AbortSignal } = {},
+  ): Promise<string> {
+    this.assertConfigured()
+    const params = new URLSearchParams({
+      workspace_id: this.resolveWorkspaceId(options.workspaceId),
+      image_path: imagePath,
+    })
+    const envelope = await this.request<TapdImageEnvelope>(`/files/get_image?${params}`, {
+      signal: options.signal,
+    })
+    const url = str(envelope.data?.Attachment?.download_url)
+    if (!url) throw new TapdError(`TAPD 没有为图片 ${imagePath} 返回下载地址。`)
+    return url
+  }
+
   /** 需求总数，过滤器与列表保持一致，前端才能算「还有没有下一页」。 */
   async countStories(query: ListStoriesQuery = {}, signal?: AbortSignal): Promise<number | undefined> {
     this.assertConfigured()
@@ -463,6 +487,10 @@ interface TapdIterationEnvelope {
 
 interface TapdMemberEnvelope {
   readonly UserWorkspace?: Record<string, unknown>
+}
+
+interface TapdImageEnvelope {
+  readonly Attachment?: { readonly download_url?: unknown }
 }
 
 /** 更新 / 新建接口的返回可能是单个对象，也可能是长度为 1 的数组。 */

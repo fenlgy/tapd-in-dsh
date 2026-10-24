@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const { useCallback, useEffect, useMemo, useState } = React;
+    const { useCallback, useEffect, useMemo, useRef, useState } = React;
 
     /** locale 命名空间。 */
     const NS = 'tapd-in-dsh';
@@ -40,6 +40,10 @@ window.__ModuleLoader__.load({
     const STORIES_PATH = '/__stories';
     const STORY_PATH = '/__story';
     const FILTERS_PATH = '/__filters';
+    /** 正文图片，宿主用令牌换签名地址后转发；直连 www.tapd.cn 会跳登录页。 */
+    const IMAGE_PATH = '/__image';
+    /** TAPD 网页端源站：正文里的相对地址（`/tfl/...`）按它补全。 */
+    const TAPD_WEB_ORIGIN = 'https://www.tapd.cn';
     /** 一次拉多少条需求。 */
     const PAGE_LIMIT = 20;
 
@@ -283,6 +287,237 @@ window.__ModuleLoader__.load({
     }
 
     //#endregion
+    //#region 富文本
+
+    /**
+     * 需求正文是 TAPD 富文本编辑器（TinyMCE）吐出来的 HTML 片段，
+     * 所以要「渲染效果」，不能把源码当文本显示。
+     *
+     * 但它终究是第三方内容，直接 `dangerouslySetInnerHTML` 等于把 XSS 请进来，
+     * 因此先过一遍白名单：只留排版标签，属性按标签放行，样式按属性放行，
+     * 链接与图片地址还要再做协议与来源检查。
+     */
+
+    /** 允许保留的标签：够覆盖 TAPD 编辑器产出的排版，不含任何可执行/可嵌入的东西。 */
+    const RICH_TAGS = new Set([
+      'p', 'div', 'span', 'br', 'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'del', 'ins', 'sub', 'sup',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'dl', 'dt', 'dd',
+      'blockquote', 'pre', 'code', 'hr', 'a', 'img', 'small', 'mark', 'font',
+      'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption',
+      'figure', 'figcaption',
+    ]);
+    /** 连内容一起丢掉的标签：留着只会变成源码噪音，或者本身就是攻击面。 */
+    const RICH_DROP = new Set([
+      'script', 'style', 'noscript', 'template', 'iframe', 'frame', 'frameset', 'object', 'embed',
+      'applet', 'form', 'input', 'button', 'select', 'textarea', 'option', 'link', 'meta', 'base',
+      'svg', 'math', 'video', 'audio', 'source', 'track', 'canvas', 'marquee',
+    ]);
+    /** 每个标签允许留的属性；不在表里的属性一律摘掉（含所有 on* 事件）。 */
+    const RICH_ATTRS = {
+      a: ['href', 'title'],
+      img: ['src', 'alt', 'title', 'width', 'height'],
+      td: ['colspan', 'rowspan', 'align', 'valign', 'width'],
+      th: ['colspan', 'rowspan', 'align', 'valign', 'width'],
+      table: ['border', 'cellpadding', 'cellspacing', 'width', 'align'],
+      ol: ['start'],
+      font: ['color', 'size', 'face'],
+    };
+    /** style 里只留这些声明；带 url()/expression 的一律丢。 */
+    const RICH_STYLE_PROPS = new Set([
+      'color', 'background-color', 'text-align', 'text-decoration', 'font-weight', 'font-style',
+      'font-size', 'font-family', 'line-height', 'text-indent', 'vertical-align', 'white-space',
+    ]);
+
+    /**
+     * 把一段正文 HTML 洗成可安全插入 DOM 的 HTML。
+     * @param html TAPD 返回的正文
+     * @returns 白名单过滤后的 HTML 字符串（没有 DOM 时退化成转义文本）
+     */
+    function sanitizeRichText(html) {
+      const source = String(html ?? '');
+      if (!source.trim()) return '';
+      // 浏览器里 DOMParser 是全局；某些嵌入环境（如 jsdom 只挂了 window）得从 window 上取
+      const Parser =
+        typeof DOMParser === 'function'
+          ? DOMParser
+          : typeof window !== 'undefined' && typeof window.DOMParser === 'function'
+            ? window.DOMParser
+            : null;
+      if (!Parser) return `<div>${escapeHtml(source)}</div>`;
+      let doc;
+      try {
+        doc = new Parser().parseFromString(source, 'text/html');
+      } catch {
+        return `<div>${escapeHtml(source)}</div>`;
+      }
+      if (!doc.body) return `<div>${escapeHtml(source)}</div>`;
+      cleanRichNode(doc.body);
+      return doc.body.innerHTML;
+    }
+
+    /**
+     * 递归清洗一个容器里的子节点。
+     * @param node 容器节点
+     */
+    function cleanRichNode(node) {
+      // 先快照：清洗过程中会摘节点、拆标签，边遍历边改会漏项
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 3) continue; // 文本原样保留，序列化时自动转义
+        if (child.nodeType !== 1) {
+          child.remove(); // 注释、CDATA 之类
+          continue;
+        }
+        const tag = child.tagName.toLowerCase();
+        if (RICH_DROP.has(tag)) {
+          child.remove();
+          continue;
+        }
+        if (!RICH_TAGS.has(tag)) {
+          // 不认识的标签：留内容、丢标签，别让整段文字凭空消失
+          cleanRichNode(child);
+          unwrapNode(child);
+          continue;
+        }
+        cleanRichAttributes(child, tag);
+        cleanRichNode(child);
+        // 编辑器用连续 `<div><br></div>` 表示空行：标出来，样式里不再叠 margin，
+        // 否则连续空行会把正文撑出比 TAPD 里大一倍的空白。
+        if (
+          (tag === 'p' || tag === 'div')
+          && child.textContent.trim() === ''
+          && !child.querySelector('img,table,hr,pre,blockquote')
+        ) {
+          child.setAttribute('data-blank', '1');
+        }
+      }
+    }
+
+    /**
+     * 按标签白名单收拾属性。
+     * @param element 元素
+     * @param tag 小写标签名
+     */
+    function cleanRichAttributes(element, tag) {
+      const allowed = RICH_ATTRS[tag] || [];
+      for (const attr of Array.from(element.attributes)) {
+        const name = attr.name.toLowerCase();
+        if (name === 'style') {
+          const style = sanitizeStyle(attr.value);
+          if (style) element.setAttribute('style', style);
+          else element.removeAttribute('style');
+          continue;
+        }
+        if (allowed.indexOf(name) < 0) {
+          element.removeAttribute(name);
+          continue;
+        }
+        if (name === 'href') {
+          const href = safeLink(attr.value);
+          if (href) element.setAttribute('href', href);
+          else element.removeAttribute('href');
+        } else if (name === 'src') {
+          const src = imageSource(attr.value);
+          if (src) element.setAttribute('src', src);
+          else element.removeAttribute('src');
+        }
+      }
+      if (tag === 'a' && element.getAttribute('href')) {
+        // 面板内跳转会顶掉整页，一律新窗口；noopener 顺便挡掉 window.opener 反手
+        element.setAttribute('target', '_blank');
+        element.setAttribute('rel', 'noopener noreferrer');
+      }
+      // 图源被毙掉的 img 留着就是破图标
+      if (tag === 'img' && !element.getAttribute('src')) element.remove();
+    }
+
+    /** 把元素拆掉、内容并到父节点。 */
+    function unwrapNode(element) {
+      const parent = element.parentNode;
+      if (!parent) return;
+      while (element.firstChild) parent.insertBefore(element.firstChild, element);
+      element.remove();
+    }
+
+    /**
+     * 链接只放行 http(s) 与页内锚点，`javascript:` 之类直接不给 href。
+     * @param raw 原始属性值
+     * @returns 可用的地址，或空串
+     */
+    function safeLink(raw) {
+      const value = String(raw ?? '').trim();
+      if (!value) return '';
+      if (value.charAt(0) === '#') return value;
+      try {
+        const url = new URL(value, TAPD_WEB_ORIGIN);
+        return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+      } catch {
+        return '';
+      }
+    }
+
+    /**
+     * 图片地址：TAPD 图床走宿主代理，其余 http(s) 与外链照原样。
+     * @param raw 原始属性值
+     * @returns 可用于 <img src> 的地址，或空串
+     */
+    function imageSource(raw) {
+      const value = String(raw ?? '').trim();
+      if (!value) return '';
+      if (/^data:image\//i.test(value)) return value;
+      let url;
+      try {
+        url = new URL(value, TAPD_WEB_ORIGIN);
+      } catch {
+        return '';
+      }
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+      // www.tapd.cn/tfl/... 需要登录态，浏览器直连只会拿到登录页
+      if (url.pathname.indexOf('/tfl/') === 0 || url.pathname.indexOf('/tapd3/') === 0) {
+        return `${routeBase()}${IMAGE_PATH}?path=${encodeURIComponent(url.pathname)}`;
+      }
+      return url.href;
+    }
+
+    /**
+     * style 属性过滤：只留排版相关的声明。
+     * @param raw 原始 style
+     * @returns 过滤后的 style，或空串
+     */
+    function sanitizeStyle(raw) {
+      const kept = [];
+      for (const part of String(raw ?? '').split(';')) {
+        const index = part.indexOf(':');
+        if (index < 0) continue;
+        const prop = part.slice(0, index).trim().toLowerCase();
+        const value = part.slice(index + 1).trim();
+        if (!prop || !value) continue;
+        if (RICH_STYLE_PROPS.has(prop) === false) continue;
+        if (/url\(|expression|javascript:|@import/i.test(value)) continue;
+        kept.push(`${prop}:${value}`);
+      }
+      return kept.join(';');
+    }
+
+    /**
+     * 转义成 HTML 文本，给「没有 DOMParser」的降级分支用。
+     * @param text 原始文本
+     */
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+    }
+
+    /**
+     * 清洗后的正文里到底有没有可见内容。
+     * 全是 `<div><br></div>` 这种空壳时，应该显示「无描述」而不是一片空白。
+     * @param html 清洗后的 HTML
+     */
+    function hasVisibleContent(html) {
+      if (!html) return false;
+      if (/<(img|table|hr|pre|blockquote)\b/i.test(html)) return true;
+      return html.replace(/<[^>]*>/g, '').replace(/&nbsp;/gi, ' ').trim() !== '';
+    }
+
+    //#endregion
     //#region 样式
 
     /**
@@ -405,8 +640,33 @@ window.__ModuleLoader__.load({
 
 /* 详情 */
 .tapd-detailTitle{margin:0;font-size:20px;font-weight:500;line-height:28px;letter-spacing:-0.01em;word-break:break-word}
-.tapd-desc{padding:16px;font-size:14px;line-height:24px;white-space:pre-wrap;word-break:break-word}
 .tapd-descEmpty{padding:16px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}
+/* 需求正文：TAPD 给的是富文本 HTML，这里把常用块拉回宿主的排版口径 */
+.tapd-rich{padding:16px;font-size:14px;line-height:24px;word-break:break-word;overflow-wrap:anywhere}
+.tapd-rich>*:first-child{margin-top:0}
+.tapd-rich>*:last-child{margin-bottom:0}
+.tapd-rich p,.tapd-rich div{margin:0 0 8px}
+.tapd-rich [data-blank]{margin-bottom:0}
+.tapd-rich span{line-height:inherit}
+.tapd-rich h1,.tapd-rich h2,.tapd-rich h3{margin:16px 0 8px;font-size:15px;font-weight:600;line-height:24px}
+.tapd-rich h4,.tapd-rich h5,.tapd-rich h6{margin:12px 0 6px;font-size:14px;font-weight:600;line-height:22px}
+.tapd-rich ul,.tapd-rich ol{margin:0 0 8px;padding-left:22px}
+.tapd-rich li{margin:2px 0}
+.tapd-rich li>ul,.tapd-rich li>ol{margin:2px 0}
+.tapd-rich dl{margin:0 0 8px}
+.tapd-rich dd{margin:0 0 4px 22px}
+.tapd-rich a{color:var(--dsw-alias-state-business-primary);text-decoration:none}
+.tapd-rich a:hover{text-decoration:underline}
+.tapd-rich img{display:block;max-width:100%;height:auto;margin:8px 0;border-radius:var(--dsw-radius-sm)}
+.tapd-rich hr{margin:16px 0;border:0;border-top:.5px solid var(--dsw-alias-border-l3)}
+.tapd-rich blockquote{margin:8px 0;padding:2px 12px;border-left:2px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-secondary)}
+.tapd-rich code{font-family:var(--ds-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:13px;padding:1px 5px;border-radius:4px;background:var(--dsw-alias-bg-module-platform)}
+.tapd-rich pre{margin:8px 0;padding:12px;border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-module-platform);overflow:auto;line-height:20px}
+.tapd-rich pre code{padding:0;background:none}
+.tapd-rich table{margin:8px 0;max-width:100%;border-collapse:collapse;font-size:13px;line-height:20px}
+.tapd-rich th,.tapd-rich td{padding:6px 10px;border:.5px solid var(--dsw-alias-border-l3);text-align:left;vertical-align:top;word-break:break-word}
+.tapd-rich th{background:var(--dsw-alias-bg-module-platform);font-weight:500}
+.tapd-imgFail{display:inline-flex;align-items:center;margin:6px 0;padding:6px 10px;border:.5px dashed var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 
 /* 提示条 */
 .tapd-alert{display:flex;align-items:flex-start;gap:8px;padding:10px 12px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}
@@ -1005,6 +1265,41 @@ window.__ModuleLoader__.load({
       if (story.modified) meta.push(h('span', { key: 'modified', className: 'tapd-metaItem' }, `${t('modified')} ${String(story.modified).slice(0, 16)}`));
       meta.push(h('span', { key: 'id', className: 'tapd-metaItem tapd-mono' }, `#${story.id}`));
 
+      // 正文是 HTML：洗一遍再插入，变更时重算，避免每次渲染都解析整段正文
+      const richHtml = useMemo(
+        () => sanitizeRichText(story.description || ''),
+        [story.description],
+      );
+      const richRef = useRef(null);
+
+      /**
+       * 图片加载失败时换成一句提示。
+       *
+       * innerHTML 里的元素挂不上 React 的事件，只能挂载后补事件；
+       * 最常见的原因是签名地址过期（300 秒）或图片已被删除。
+       */
+      useEffect(() => {
+        const host = richRef.current;
+        if (!host) return undefined;
+        const images = Array.from(host.querySelectorAll('img'));
+        const detach = [];
+        for (const img of images) {
+          const fail = () => {
+            const note = document.createElement('span');
+            note.className = 'tapd-imgFail';
+            note.textContent = t('imageFailed');
+            if (img.parentNode) img.parentNode.replaceChild(note, img);
+          };
+          img.addEventListener('error', fail);
+          // 缓存里已经失败过的图片不会再触发 error，逐个补一刀
+          if (img.complete && img.naturalWidth === 0) fail();
+          detach.push(() => img.removeEventListener('error', fail));
+        }
+        return () => {
+          for (const off of detach) off();
+        };
+      }, [richHtml, t]);
+
       let body;
       if (detail.loading) {
         body = h(
@@ -1040,8 +1335,13 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'tapd-card' },
           h('div', { className: 'tapd-cardHead' }, h('h2', { className: 'tapd-cardTitle' }, t('description'))),
-          story.description
-            ? h('div', { className: 'tapd-desc' }, story.description)
+          hasVisibleContent(richHtml)
+            ? h('div', {
+                ref: richRef,
+                className: 'tapd-rich',
+                // 已经过 sanitizeRichText 的白名单清洗：只留排版标签、安全属性与 http(s) 地址
+                dangerouslySetInnerHTML: { __html: richHtml },
+              })
             : h('div', { className: 'tapd-descEmpty' }, t('noDescription')),
         );
       }
@@ -1584,6 +1884,7 @@ window.__ModuleLoader__.load({
               priority: '优先级',
               modified: '更新',
               noDescription: '这条需求没有描述正文。',
+              imageFailed: '图片加载失败，可在 TAPD 里查看原图',
               openInTapd: '在 TAPD 打开',
               authBasic: '开放应用鉴权',
               authToken: '个人令牌',
@@ -1653,6 +1954,7 @@ window.__ModuleLoader__.load({
               priority: 'Priority',
               modified: 'Updated',
               noDescription: 'This story has no description.',
+              imageFailed: 'Image failed to load — open it in TAPD',
               openInTapd: 'Open in TAPD',
               authBasic: 'app credentials',
               authToken: 'personal token',

@@ -1,6 +1,6 @@
 {
   "name": "tapd-in-dsh",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DeepSeek Harness 插件：接入 TAPD 需求，支持在会话中通过 @tapd:story:<id> 引用需求全文",
   "type": "module",
   "main": "lib/index.js",
@@ -39,7 +39,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/routes.smoke.mjs && node test/client.smoke.mjs && node test/error.smoke.mjs",
+    "test": "node test/routes.smoke.mjs && node test/client.smoke.mjs && node test/panel.smoke.mjs && node test/error.smoke.mjs",
     "check": "node scripts/check.mjs",
     "sync:install": "node scripts/sync-install.mjs",
     "sync:check": "node scripts/sync-install.mjs --check",
@@ -60,6 +60,9 @@
     "@deepseek-ai/dsh-tools": "0.0.1-rc.1",
     "@deepseek-ai/schemastery": "3.18.5",
     "@types/node": "^22.10.0",
+    "jsdom": "^30.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.7.0"
   },
   "keywords": [

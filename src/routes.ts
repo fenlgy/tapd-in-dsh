@@ -7,15 +7,18 @@
  *   GET  /tapd/__stories?keyword=&status=   需求列表（含可粘贴的引用 token，带总数与是否还有下一页）
  *   GET  /tapd/__story?id=                  单条需求全文
  *   GET  /tapd/__filters                    筛选器的选项：状态表 / 迭代 / 成员
+ *   GET  /tapd/__image?path=                需求正文里的图片（宿主用令牌换成签名地址再转发字节）
  *
  * 浏览器只和这个同源前缀打交道，凭据留在 Node 侧，不进入跨域请求。
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { Readable } from 'node:stream'
 import { TapdClient, TapdError } from './tapd.js'
 import type { TapdStory } from './tapd.js'
 import { publicConfig, writeStore, resolveConfig } from './store.js'
 import type { ResolvedConfig, StoredConfig } from './store.js'
 import { formatReference } from './reference.js'
+import { htmlToLine } from './richtext.js'
 
 /** 挂在宿主上的路由前缀。 */
 export const ROUTE_PATH = '/tapd'
@@ -29,6 +32,8 @@ const STORIES_PATH = '/__stories'
 const STORY_PATH = '/__story'
 /** 筛选器选项端点。 */
 const FILTERS_PATH = '/__filters'
+/** 正文图片端点。 */
+const IMAGE_PATH = '/__image'
 
 /** 宿主 web server 的最小接口，避免把 dsh-host-webserver 变成硬依赖。 */
 interface WebServerLike {
@@ -70,6 +75,8 @@ export function registerRoutes(webServer: WebServerLike, rowConfig: StoredConfig
         if (sub === STORY_PATH && req.method === 'GET') return await runStory(res, url, rowConfig)
 
         if (sub === FILTERS_PATH && req.method === 'GET') return await runFilters(res, rowConfig)
+
+        if (sub === IMAGE_PATH && req.method === 'GET') return await runImage(res, url, rowConfig)
 
         return sendJson(res, 404, { error: `未知端点 ${sub}` })
       } catch (error) {
@@ -213,9 +220,93 @@ async function runStory(res: ServerResponse, url: URL, rowConfig: StoredConfig):
   sendJson(res, 200, { story: { ...story, reference: formatReference(story) } })
 }
 
+/**
+ * 正文里的图片。
+ *
+ * `<img src="/tfl/captures/...">` 指向 www.tapd.cn 的登录态资源，浏览器直连只会跳登录页；
+ * 宿主持有令牌，先用 `/files/get_image` 换一个签名地址，再把字节转发回来。
+ * 之所以转发字节而不是 302：桌面端页面跑在 `dsh-app://app` 上，
+ * 少一层跳转就少一处「换协议之后还认不认」的依赖。
+ */
+async function runImage(res: ServerResponse, url: URL, rowConfig: StoredConfig): Promise<void> {
+  const imagePath = (url.searchParams.get('path') ?? '').trim()
+  if (!isImagePath(imagePath)) {
+    sendPlaceholder(res, 400, '图片地址不合法')
+    return
+  }
+  try {
+    const client = createClient(rowConfig)
+    const target = await client.getImageUrl(imagePath)
+    const upstream = await fetch(target, { signal: AbortSignal.timeout(20_000) })
+    if (!upstream.ok || !upstream.body) {
+      upstream.body?.cancel().catch(() => {})
+      throw new TapdError(`图片下载地址返回 HTTP ${upstream.status}`)
+    }
+    // TAPD 的 file.tapd.cn 会回一个残缺的 `Content-Type: image`（没有子类型），
+    // 浏览器拿到这种类型不一定肯当图片解码，所以类型不可信时按后缀补一个
+    const upstreamType = (upstream.headers.get('content-type') ?? '').trim()
+    const contentType = /^image\/[a-z0-9.+-]+$/i.test(upstreamType) ? upstreamType : guessImageType(imagePath)
+    const headers = {
+      'content-type': contentType,
+      // 同一个 path 的图片不会变，缓存住能省调用次数；签名地址本身 300 秒有效
+      'cache-control': 'private, max-age=600',
+      ...(upstream.headers.get('content-length')
+        ? { 'content-length': upstream.headers.get('content-length') as string }
+        : {}),
+    }
+    res.writeHead(200, headers)
+    // 转发失败时只能断开：响应头已经发出去了，没法再换成占位图
+    Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0])
+      .on('error', () => res.destroy())
+      .pipe(res)
+  } catch (error) {
+    const message = error instanceof TapdError ? error.message : String((error as Error)?.message ?? error)
+    sendPlaceholder(res, 502, message)
+  }
+}
+
+/** 只放行 TAPD 图床路径，挡掉 `..` 与任何协议前缀。 */
+function isImagePath(value: string): boolean {
+  if (!value.startsWith('/') || value.includes('..')) return false
+  return /^\/[A-Za-z0-9._~/-]+\.(png|jpe?g|gif|bmp|webp)$/i.test(value)
+}
+
+/** 按后缀补 content-type；TAPD 自己给的类型不可信时用。 */
+function guessImageType(imagePath: string): string {
+  const ext = imagePath.slice(imagePath.lastIndexOf('.') + 1).toLowerCase()
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'bmp') return 'image/bmp'
+  if (ext === 'webp') return 'image/webp'
+  return 'image/png'
+}
+
+/** 图片取不到时回一张 SVG，面板里看到的是「加载失败」而不是破图标。 */
+function sendPlaceholder(res: ServerResponse, status: number, message: string): void {
+  const body = placeholderSvg(message)
+  res.writeHead(status, {
+    'content-type': 'image/svg+xml; charset=utf-8',
+    'cache-control': 'no-store',
+    'content-length': Buffer.byteLength(body),
+  })
+  res.end(body)
+}
+
+function placeholderSvg(message: string): string {
+  const text = message.replace(/[<>&]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[ch] ?? ch)
+  return [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="120" viewBox="0 0 480 120">',
+    '<rect x="0.5" y="0.5" width="479" height="119" rx="8" fill="none" stroke="#c9ccd1" stroke-dasharray="6 4"/>',
+    '<text x="240" y="56" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="13" fill="#8a8f98">图片加载失败</text>',
+    `<text x="240" y="78" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="11" fill="#a8adb5">${text.slice(0, 60)}</text>`,
+    '</svg>',
+  ].join('')
+}
+
 /** 列表行：描述截断，避免一次把几十条正文传进浏览器。 */
 function summarize(story: TapdStory): TapdStory & { reference: string; summary: string } {
-  const body = (story.description ?? '').replace(/\s+/g, ' ').trim()
+  // 正文是 HTML，摘要里不能漏标签，先折成单行文本再截断
+  const body = htmlToLine(story.description ?? '')
   return {
     ...story,
     description: undefined,

@@ -155,6 +155,19 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 - 每行右侧有个「插入」按钮（悬停变亮）：点了会把 `@tapd:story:<id>` 写进当前会话输入框的**光标处**，不用切窗口粘贴。拿不到输入框句柄时（没有打开会话 / 老版本宿主）自动退回复制，并提示已复制。
 - 详情页右上角也有「插入到对话」，旁边是「复制引用」「复制 ID」「在 TAPD 打开」。
 
+### 正文渲染
+
+TAPD 的 `description` 字段存的是富文本编辑器导出的 **HTML 源码**（`<div><p>…</p></div>`、`<img src="/tfl/…">`），直接当文本显示就是一堆标签。面板会把它**渲染成排版后的样子**：
+
+- 只保留排版标签（标题、段落、列表、表格、引用、代码、图片、链接），脚本、样式、内联事件、`javascript:` 链接这些全部丢掉；
+- 样式只放行排版相关的声明（颜色、对齐、字重等），`position` 之类的定位属性会被剔除，避免正文把面板挤乱；
+- 正文里的图片 `/tfl/...` 在 www.tapd.cn 上要登录态，浏览器直连只会跳登录页。插件在宿主侧用 `files/get_image` 换成签名地址，再由 `/tapd/__image` 转发字节，所以**不需要在 DSH 里登录 TAPD 也能看到图**；
+- 图片挂了（签名过期、图被删）会显示一句「图片加载失败」，不会留个破图标。
+
+正文里全是空壳（`<div><br></div>`）时显示「这条需求没有描述正文」，不会留一片空白。
+
+发给模型的引用上下文里，这段 HTML 会被折成纯文本（图片折成 `[图片]`），不把源码塞进上下文。
+
 ### 界面
 
 面板不另起一套皮肤，直接贴着宿主的设计系统走：
@@ -227,6 +240,7 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 - **未验证**：在真实 DSH 例程里跑通全链路。类型是按 `@deepseek-ai/dsh-tools@0.0.1-rc.1` / `dsh-llm@0.0.1-rc.1` / `dsh-agent@0.1.0-rc.6` 核的，而 `@deepseek-ai/dsh` 本身已经到 `0.2.1-rc.2`，装到你本地后如果签名有变，`npm run typecheck` 会直接报出来。
 - **已核实（读 DSH 内置包确认）**：客户端半区的模块约定 `window.__ModuleLoader__.load({ id, factory })`、`ctx.slots.register` 的 `main` / `sidebar.panellist` 两个插槽及其 `key` 对应关系、`ctx.locale.register(ns, { zh, en })` + `ctx.locale.bind(ns)`、宿主侧 `ctx.webServer.register({ kind: 'prefix', path, handler })`。浏览器半区与 `client.js` 的注册契约有冒烟测试（`npm test`）。
 - **已核实（读 `dsh-client-ui-conversation` 确认）**：`conversation.input.left` 是 `{ kind: 'list', scope: 'session' }` 的插槽；宿主的输入框动作面是 `captureInsertion()` + `insertText(text, span)`（不是只能整段 `setDraft`），所以「插入到对话」能落在光标处而不是覆盖草稿。拿不到 `inputActions` 时插件退回复制。
+- **已核实（真实令牌实测）**：正文里的图片直连 `https://www.tapd.cn/tfl/...` 会 302 到登录页；换成 `GET /files/get_image?workspace_id=&image_path=` 后返回签名地址（`file.tapd.cn/attachments/tmp_download/...`，300 秒有效），按字节取回来是正常 PNG。注意该地址回的 `Content-Type` 是残缺的 `image`（没有子类型），插件按后缀补成 `image/png`，否则浏览器可能不肯当图解码。
 - **未实现**：缺陷（bug）接口；面板里直接新建需求（目前只给工具，不进面板）。
 
 ## 路线
@@ -241,8 +255,19 @@ Basic Auth 优先：`apiUser` 和 `apiPassword` 同时存在时用 Basic，否�
 npm install           # 仓库带了 .npmrc，走 legacy-peer-deps
 npm run typecheck     # 只检查类型
 npm run build         # 产出 lib/
-npm test              # 宿主路由 + 客户端注册契约的冒烟测试
+npm test              # 四个冒烟测试，见下
 ```
+
+`npm test` 跑的四个冒烟测试：
+
+| 文件 | 盯什么 |
+|---|---|
+| `test/routes.smoke.mjs` | 宿主侧路由：配置读写、列表分页筛选、详情、正文图片转发、错误透传 |
+| `test/client.smoke.mjs` | 客户端模块契约：插槽注册、同源请求、词典缺 key |
+| `test/panel.smoke.mjs` | 面板真渲染（jsdom + 真 React）：正文 HTML 渲染、危险标签属性被清洗、图片走代理、空正文空态 |
+| `test/error.smoke.mjs` | TAPD 各种 4xx 的提示文案 |
+
+`panel.smoke.mjs` 需要 `jsdom` / `react` / `react-dom`（devDependencies，只在测试里用，不进 npm 包）。
 
 > `client.js` 是手写的浏览器半区，不走构建：DSH 的客户端加载器按 `window.__ModuleLoader__.load({ id, factory })` 取模块，`factory` 返回 `{ inject, apply }`，`require` 只解析宿主已提供的裸模块（`react`）。改完刷新页面即可，不用重新 build。
 
