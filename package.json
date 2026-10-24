@@ -43,6 +43,7 @@
     "check": "node scripts/check.mjs",
     "sync:install": "node scripts/sync-install.mjs",
     "sync:check": "node scripts/sync-install.mjs --check",
+    "after-commit": "npm run build && npm test && node scripts/sync-install.mjs",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {

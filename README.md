@@ -266,6 +266,15 @@ npm run sync:check       # 只看版本差，不写盘
 
 它会按 `package.json` 的 `files` 清单覆盖 `~/.dsh/profiles/*/node_modules/tapd-in-dsh`，**不碰配置**：令牌、项目 ID 都在 `~/.dsh/tapd/config.json`（可用 `DSH_HOME` 改根目录），所以不用重填。改完重启 DSH 生效。
 
+提交后一条命令做完（构建 + 测试 + 覆盖已装目录）：
+
+```bash
+npm run after-commit
+```
+
+仓库里的 `AGENTS.md` 把这条写成了硬规则，在本仓库里工作的助手每次提交后都会自动执行。
+
+
 同步让已装目录的版本比 `pnpm-lock.yaml` 里记的新——这只影响「以后是否又要重新拉一次」，下次从图形界面或 pnpm 更新时会重新对齐到推送过的那份，行为一致。
 
 源码挂载调试（官方 scratch 流程）：
